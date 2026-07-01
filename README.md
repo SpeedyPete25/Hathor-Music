@@ -6,6 +6,16 @@ A simple Discord bot named Hathor built with discord.js.
 
 - /ping replies with Pong.
 - /hathor confirms the bot is listening.
+- /play input:<youtube-link-or-search> joins your active voice channel and plays audio.
+- /leave disconnects Hathor from voice.
+
+## Required Permissions
+
+- View Channels
+- Send Messages
+- Read Message History
+- Connect
+- Speak
 
 ## Setup
 
