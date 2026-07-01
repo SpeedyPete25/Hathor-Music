@@ -44,11 +44,37 @@ const guildAudioState = new Map();
 
 function cleanupGuildAudio(guildId) {
   const state = guildAudioState.get(guildId);
-  if (!state) return;
+  if (!state || state.cleaning) return;
 
-  state.player.stop(true);
-  state.connection.destroy();
+  state.cleaning = true;
+
+  try {
+    state.player.stop(true);
+  } catch (error) {
+    console.error("Failed to stop audio player during cleanup:", error);
+  }
+
+  try {
+    state.connection.destroy();
+  } catch (error) {
+    console.error("Failed to destroy voice connection during cleanup:", error);
+  }
+
   guildAudioState.delete(guildId);
+}
+
+async function safeInteractionReply(interaction, payload) {
+  if (interaction.deferred) {
+    await interaction.editReply(payload);
+    return;
+  }
+
+  if (interaction.replied) {
+    await interaction.followUp(payload);
+    return;
+  }
+
+  await interaction.reply(payload);
 }
 
 async function resolvePlayableInput(input) {
@@ -139,60 +165,60 @@ client.once(Events.ClientReady, (readyClient) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "ping") {
-    await interaction.reply("Pong from Hathor.");
-  }
-
-  if (interaction.commandName === "hathor") {
-    await interaction.reply("Hathor is listening.");
-  }
-
-  if (interaction.commandName === "leave") {
-    if (!interaction.guildId) {
-      await interaction.reply({
-        content: "This command can only be used in a server.",
-        ephemeral: true,
-      });
-      return;
+  try {
+    if (interaction.commandName === "ping") {
+      await interaction.reply("Pong from Hathor.");
     }
 
-    cleanupGuildAudio(interaction.guildId);
-    await interaction.reply("Left the voice channel.");
-  }
-
-  if (interaction.commandName === "play") {
-    if (!interaction.guildId || !interaction.guild) {
-      await interaction.reply({
-        content: "This command can only be used in a server.",
-        ephemeral: true,
-      });
-      return;
+    if (interaction.commandName === "hathor") {
+      await interaction.reply("Hathor is listening.");
     }
 
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-    const memberChannel = member.voice.channel;
+    if (interaction.commandName === "leave") {
+      if (!interaction.guildId) {
+        await interaction.reply({
+          content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
 
-    if (!memberChannel) {
-      await interaction.reply({
-        content: "Join a voice channel first, then use /play.",
-        ephemeral: true,
-      });
-      return;
+      cleanupGuildAudio(interaction.guildId);
+      await interaction.reply("Left the voice channel.");
     }
 
-    const input = interaction.options.getString("input", true);
-    const botMember = await interaction.guild.members.fetchMe();
-    const permissions = memberChannel.permissionsFor(botMember);
+    if (interaction.commandName === "play") {
+      if (!interaction.guildId || !interaction.guild) {
+        await interaction.reply({
+          content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
 
-    if (!permissions?.has(["Connect", "Speak"])) {
-      await interaction.reply({
-        content: "I need Connect and Speak permissions in that voice channel.",
-        ephemeral: true,
-      });
-      return;
-    }
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const memberChannel = member.voice.channel;
 
-    try {
+      if (!memberChannel) {
+        await interaction.reply({
+          content: "Join a voice channel first, then use /play.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const input = interaction.options.getString("input", true);
+      const botMember = await interaction.guild.members.fetchMe();
+      const permissions = memberChannel.permissionsFor(botMember);
+
+      if (!permissions?.has(["Connect", "Speak"])) {
+        await interaction.reply({
+          content: "I need Connect and Speak permissions in that voice channel.",
+          ephemeral: true,
+        });
+        return;
+      }
+
       await interaction.deferReply();
 
       const existing = guildAudioState.get(interaction.guildId);
@@ -226,6 +252,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
 
+        connection.on("error", (error) => {
+          console.error("Voice connection error:", error);
+          cleanupGuildAudio(interaction.guildId);
+        });
+
+        connection.on(VoiceConnectionStatus.Disconnected, async () => {
+          try {
+            await Promise.race([
+              entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+              entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+            ]);
+          } catch {
+            cleanupGuildAudio(interaction.guildId);
+          }
+        });
+
         const player = createAudioPlayer({
           behaviors: {
             noSubscriber: NoSubscriberBehavior.Pause,
@@ -243,7 +285,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           cleanupGuildAudio(interaction.guildId);
         });
 
-        state = { connection, player };
+        state = { connection, player, cleaning: false };
         guildAudioState.set(interaction.guildId, state);
       }
 
@@ -254,27 +296,54 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       state.player.play(resource);
       await interaction.editReply(`Now playing: ${resolved.title}\n${resolved.webpageUrl}`);
-    } catch (error) {
-      console.error("Failed to play audio:", error);
-      cleanupGuildAudio(interaction.guildId);
-
-      const safeReason =
-        error && typeof error.message === "string" && error.message.length < 140
-          ? error.message
-          : "Playback failed due to an unsupported source or permissions issue.";
-
-      if (interaction.deferred) {
-        await interaction.editReply(
-          `I couldn't play that input. ${safeReason}`
-        );
-      } else {
-        await interaction.reply({
-          content: `I couldn't play that input. ${safeReason}`,
-          ephemeral: true,
-        });
-      }
     }
+  } catch (error) {
+    console.error("Interaction handling error:", error);
+
+    if (interaction.commandName === "play" && interaction.guildId) {
+      cleanupGuildAudio(interaction.guildId);
+    }
+
+    const safeReason =
+      error && typeof error.message === "string" && error.message.length < 140
+        ? error.message
+        : "Something went wrong while handling that command.";
+
+    await safeInteractionReply(interaction, {
+      content: `Error: ${safeReason}`,
+      ephemeral: true,
+    });
   }
 });
+
+client.on("error", (error) => {
+  console.error("Discord client error:", error);
+});
+
+client.on("warn", (warning) => {
+  console.warn("Discord client warning:", warning);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+});
+
+function shutdown(signal) {
+  console.log(`Received ${signal}. Shutting down Hathor.`);
+
+  for (const guildId of guildAudioState.keys()) {
+    cleanupGuildAudio(guildId);
+  }
+
+  client.destroy();
+  process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 client.login(token);
