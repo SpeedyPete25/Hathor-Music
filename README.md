@@ -102,12 +102,6 @@ If you see "invalid scopes provided for user installation", use Guild Install in
    - avoid sleep/hibernation on the host machine
    - use an always-on host for production
 
-## Security Notes
-
-- Never commit your token.
-- `.env` and `token.txt` should stay out of git.
-- If a token is exposed, regenerate it immediately in the Discord Developer Portal.
-
 ## Deployment Recommendation
 
 For reliable uptime outside your local machine, deploy Hathor to an always-on host (for example Railway, Render, Fly.io, or a VPS) and set `DISCORD_TOKEN` as an environment variable.
