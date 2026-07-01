@@ -133,7 +133,7 @@ async function resolvePlayableInput(input) {
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Hathor is online as ${readyClient.user.tag}`);
-  readyClient.user.setActivity("the stars", { type: 3 });
+  readyClient.user.setActivity("Hymns of the Nile", { type: 0 });
 
   const commands = [
     new SlashCommandBuilder()
