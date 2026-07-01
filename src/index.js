@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { Readable } = require("node:stream");
 const {
   Client,
   Events,
@@ -14,10 +15,11 @@ const {
   VoiceConnectionStatus,
   createAudioPlayer,
   createAudioResource,
+  demuxProbe,
   entersState,
   joinVoiceChannel,
 } = require("@discordjs/voice");
-const play = require("play-dl");
+const ytdlExec = require("youtube-dl-exec");
 
 const tokenPath = path.join(__dirname, "..", "token.txt");
 const fileToken = fs.existsSync(tokenPath)
@@ -51,28 +53,55 @@ function cleanupGuildAudio(guildId) {
 
 async function resolvePlayableInput(input) {
   const trimmed = input.trim();
-  const youtubeValidation = play.yt_validate(trimmed);
+  let videoUrl = null;
 
-  if (youtubeValidation === "video") {
-    return {
-      url: trimmed,
-      title: trimmed,
-    };
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    const parsed = new URL(trimmed);
+
+    if (parsed.hostname === "youtu.be") {
+      const id = parsed.pathname.replace("/", "");
+      if (!id) {
+        throw new Error("Invalid YouTube short link.");
+      }
+
+      videoUrl = `https://www.youtube.com/watch?v=${id}`;
+    } else {
+      videoUrl = trimmed;
+    }
+  } else {
+    const searchResult = await ytdlExec(`ytsearch1:${trimmed}`, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      skipDownload: true,
+    });
+
+    const firstResult =
+      Array.isArray(searchResult?.entries) && searchResult.entries.length > 0
+        ? searchResult.entries[0]
+        : null;
+
+    if (!firstResult?.id) {
+      throw new Error("No YouTube results found.");
+    }
+
+    videoUrl = `https://www.youtube.com/watch?v=${firstResult.id}`;
   }
 
-  // Accept search text and resolve it to a public YouTube result.
-  const results = await play.search(trimmed, {
-    limit: 1,
-    source: { youtube: "video" },
+  const info = await ytdlExec(videoUrl, {
+    dumpSingleJson: true,
+    noWarnings: true,
+    skipDownload: true,
+    format: "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=webm]/bestaudio",
   });
 
-  if (!results.length || !results[0].url) {
-    throw new Error("No playable YouTube result found.");
+  if (!info?.url) {
+    throw new Error("Could not extract a playable audio stream.");
   }
 
   return {
-    url: results[0].url,
-    title: results[0].title || results[0].url,
+    title: info.title || videoUrl,
+    webpageUrl: info.webpage_url || videoUrl,
+    streamUrl: info.url,
   };
 }
 
@@ -172,9 +201,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       const resolved = await resolvePlayableInput(input);
-      const stream = await play.stream(resolved.url, {
-        discordPlayerCompatibility: true,
+      const response = await fetch(resolved.streamUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        },
       });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Audio source request failed (${response.status}).`);
+      }
+
+      const upstreamStream = Readable.fromWeb(response.body);
+      const probed = await demuxProbe(upstreamStream);
 
       let state = guildAudioState.get(interaction.guildId);
       if (!state) {
@@ -208,13 +247,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
         guildAudioState.set(interaction.guildId, state);
       }
 
-      const resource = createAudioResource(stream.stream, {
-        inputType: stream.type,
+      const resource = createAudioResource(probed.stream, {
+        inputType: probed.type,
         silencePaddingFrames: 5,
       });
 
       state.player.play(resource);
-      await interaction.editReply(`Now playing: ${resolved.title}`);
+      await interaction.editReply(`Now playing: ${resolved.title}\n${resolved.webpageUrl}`);
     } catch (error) {
       console.error("Failed to play audio:", error);
       cleanupGuildAudio(interaction.guildId);
