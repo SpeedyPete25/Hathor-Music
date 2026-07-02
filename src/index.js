@@ -1,7 +1,5 @@
 require("dotenv").config();
 
-const fs = require("node:fs");
-const path = require("node:path");
 const { Readable } = require("node:stream");
 const {
   Client,
@@ -21,14 +19,10 @@ const {
 } = require("@discordjs/voice");
 const ytdlExec = require("youtube-dl-exec");
 
-const tokenPath = path.join(__dirname, "..", "token.txt");
-const fileToken = fs.existsSync(tokenPath)
-  ? fs.readFileSync(tokenPath, "utf8").trim()
-  : "";
-const token = process.env.DISCORD_TOKEN || fileToken;
+const token = process.env.DISCORD_TOKEN;
 
 if (!token) {
-  console.error("Missing DISCORD_TOKEN. Add it to .env or token.txt.");
+  console.error("Missing DISCORD_TOKEN. Set it in your environment or .env file.");
   process.exit(1);
 }
 

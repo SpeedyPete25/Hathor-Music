@@ -44,7 +44,7 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 npm install
 ```
 
-2. Create a `.env` file in the project root:
+2. Copy `.env.example` to `.env` and set your token:
 
 ```env
 DISCORD_TOKEN=your_bot_token_here
