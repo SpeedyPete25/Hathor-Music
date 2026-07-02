@@ -128,8 +128,39 @@ async function safeInteractionReply(interaction, payload) {
   await interaction.reply(payload);
 }
 
+function normalizePlayInput(rawInput) {
+  const trimmed = rawInput.trim();
+
+  // Accept markdown-style links such as [text](https://...)
+  const markdownMatch = trimmed.match(/^\[[^\]]+\]\((https?:\/\/[^\s)]+)\)$/i);
+  const normalized = markdownMatch ? markdownMatch[1].trim() : trimmed;
+
+  if (!(normalized.startsWith("http://") || normalized.startsWith("https://"))) {
+    return normalized;
+  }
+
+  const parsed = new URL(normalized);
+  const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+
+  if (host === "youtube.com" || host === "m.youtube.com") {
+    // If a direct video id is present, force a stable watch URL and drop mix/radio params.
+    const videoId = parsed.searchParams.get("v");
+    if (videoId) {
+      return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+
+    // If this is a playlist-only URL, keep just the playlist id.
+    const playlistId = parsed.searchParams.get("list");
+    if (playlistId) {
+      return `https://www.youtube.com/playlist?list=${playlistId}`;
+    }
+  }
+
+  return normalized;
+}
+
 async function resolvePlayableInput(input) {
-  const trimmed = input.trim();
+  const trimmed = normalizePlayInput(input);
   let videoUrl = null;
   let sourceNote = null;
 
