@@ -57,6 +57,63 @@ function cleanupGuildAudio(guildId) {
   guildAudioState.delete(guildId);
 }
 
+function createGuildAudioState(guildId, guild, channelId) {
+  const connection = joinVoiceChannel({
+    channelId,
+    guildId,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: true,
+  });
+
+  const player = createAudioPlayer({
+    behaviors: {
+      noSubscriber: NoSubscriberBehavior.Pause,
+    },
+  });
+
+  connection.subscribe(player);
+
+  const state = {
+    connection,
+    player,
+    cleaning: false,
+    queue: [],
+    current: null,
+  };
+
+  connection.on("error", (error) => {
+    console.error("Voice connection error:", error);
+    cleanupGuildAudio(guildId);
+  });
+
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+    } catch {
+      cleanupGuildAudio(guildId);
+    }
+  });
+
+  player.on("error", async (error) => {
+    console.error("Audio player error:", error);
+    state.current = null;
+    await playNextTrack(guildId);
+  });
+
+  player.on(AudioPlayerStatus.Idle, async () => {
+    if (!state.cleaning) {
+      state.current = null;
+      await playNextTrack(guildId);
+    }
+  });
+
+  guildAudioState.set(guildId, state);
+  return state;
+}
+
 async function safeInteractionReply(interaction, payload) {
   if (interaction.deferred) {
     await interaction.editReply(payload);
@@ -148,9 +205,70 @@ async function resolvePlayableInput(input) {
   return {
     title: info.title || videoUrl,
     webpageUrl: info.webpage_url || videoUrl,
-    streamUrl: info.url,
+    videoUrl,
     sourceNote,
   };
+}
+
+async function createTrackResource(track) {
+  const info = await ytdlExec(track.videoUrl, {
+    dumpSingleJson: true,
+    noWarnings: true,
+    skipDownload: true,
+    format: "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=webm]/bestaudio",
+  });
+
+  if (!info?.url) {
+    throw new Error("Could not extract a playable audio stream.");
+  }
+
+  const response = await fetch(info.url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    },
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Audio source request failed (${response.status}).`);
+  }
+
+  const upstreamStream = Readable.fromWeb(response.body);
+  const probed = await demuxProbe(upstreamStream);
+
+  return createAudioResource(probed.stream, {
+    inputType: probed.type,
+    silencePaddingFrames: 5,
+  });
+}
+
+async function startTrack(guildId, track) {
+  const state = guildAudioState.get(guildId);
+  if (!state) return;
+
+  state.current = track;
+
+  try {
+    const resource = await createTrackResource(track);
+    state.player.play(resource);
+  } catch (error) {
+    console.error("Failed to start track:", error);
+    state.current = null;
+    await playNextTrack(guildId);
+  }
+}
+
+async function playNextTrack(guildId) {
+  const state = guildAudioState.get(guildId);
+  if (!state || state.cleaning) return;
+
+  const nextTrack = state.queue.shift();
+  if (!nextTrack) {
+    cleanupGuildAudio(guildId);
+    return;
+  }
+
+  await startTrack(guildId, nextTrack);
 }
 
 client.once(Events.ClientReady, (readyClient) => {
@@ -249,75 +367,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       const resolved = await resolvePlayableInput(input);
-      const response = await fetch(resolved.streamUrl, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        },
-      });
-
-      if (!response.ok || !response.body) {
-        throw new Error(`Audio source request failed (${response.status}).`);
-      }
-
-      const upstreamStream = Readable.fromWeb(response.body);
-      const probed = await demuxProbe(upstreamStream);
-
       let state = guildAudioState.get(interaction.guildId);
       if (!state) {
-        const connection = joinVoiceChannel({
-          channelId: memberChannel.id,
-          guildId: interaction.guildId,
-          adapterCreator: interaction.guild.voiceAdapterCreator,
-          selfDeaf: true,
-        });
-
-        await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-
-        connection.on("error", (error) => {
-          console.error("Voice connection error:", error);
-          cleanupGuildAudio(interaction.guildId);
-        });
-
-        connection.on(VoiceConnectionStatus.Disconnected, async () => {
-          try {
-            await Promise.race([
-              entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-              entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
-            ]);
-          } catch {
-            cleanupGuildAudio(interaction.guildId);
-          }
-        });
-
-        const player = createAudioPlayer({
-          behaviors: {
-            noSubscriber: NoSubscriberBehavior.Pause,
-          },
-        });
-
-        connection.subscribe(player);
-
-        player.on("error", (error) => {
-          console.error("Audio player error:", error);
-          cleanupGuildAudio(interaction.guildId);
-        });
-
-        player.on(AudioPlayerStatus.Idle, () => {
-          cleanupGuildAudio(interaction.guildId);
-        });
-
-        state = { connection, player, cleaning: false };
-        guildAudioState.set(interaction.guildId, state);
+        state = createGuildAudioState(
+          interaction.guildId,
+          interaction.guild,
+          memberChannel.id
+        );
+        await entersState(state.connection, VoiceConnectionStatus.Ready, 15_000);
       }
 
-      const resource = createAudioResource(probed.stream, {
-        inputType: probed.type,
-        silencePaddingFrames: 5,
-      });
-
-      state.player.play(resource);
       const sourceLine = resolved.sourceNote ? `\n${resolved.sourceNote}` : "";
+
+      if (state.current) {
+        state.queue.push(resolved);
+        await interaction.editReply(
+          `Queued #${state.queue.length}: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`
+        );
+        return;
+      }
+
+      await startTrack(interaction.guildId, resolved);
       await interaction.editReply(
         `Now playing: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`
       );
