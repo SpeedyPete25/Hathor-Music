@@ -1,11 +1,26 @@
 param(
-  [switch]$Remove
+  [switch]$Remove,
+  [string]$WorkspacePath
 )
 
 $ErrorActionPreference = "Stop"
 
 $taskName = "Hathor-PM2-Resurrect"
-$workspace = "C:\Users\mfigm\Documents\Hathor-Music"
+
+function Resolve-WorkspaceRoot {
+  if ($WorkspacePath) {
+    return (Resolve-Path -Path $WorkspacePath).Path
+  }
+
+  if (-not $PSScriptRoot) {
+    throw "Unable to resolve script root. Provide -WorkspacePath explicitly."
+  }
+
+  # Default layout: <repo>/scripts/setup-pm2-autostart.ps1
+  return (Resolve-Path -Path (Join-Path $PSScriptRoot "..")).Path
+}
+
+$workspace = Resolve-WorkspaceRoot
 
 function Ensure-Pm2Exists {
   $pm2 = Get-Command pm2 -ErrorAction SilentlyContinue
@@ -31,6 +46,10 @@ if ($Remove) {
 
 Ensure-Pm2Exists
 
+if (-not (Test-Path (Join-Path $workspace "package.json"))) {
+  throw "No package.json found in '$workspace'. Pass -WorkspacePath with your bot project root."
+}
+
 # Persist the current PM2 process list so resurrect has something to restore.
 Push-Location $workspace
 try {
@@ -45,7 +64,8 @@ if ($existingTask) {
 }
 
 $powerShellPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-$arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "pm2 resurrect"'
+$escapedWorkspace = $workspace.Replace("'", "''")
+$arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"Set-Location '$escapedWorkspace'; pm2 resurrect`""
 
 $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument $arguments -WorkingDirectory $workspace
 $trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -56,6 +76,7 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Pr
 
 Write-Host "Scheduled task '$taskName' created."
 Write-Host "It will run 'pm2 resurrect' each time you log in."
+Write-Host "Workspace: $workspace"
 Write-Host ""
 Write-Host "To remove it later, run:"
 Write-Host "  powershell -ExecutionPolicy Bypass -File scripts/setup-pm2-autostart.ps1 -Remove"
