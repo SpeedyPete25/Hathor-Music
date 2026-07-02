@@ -6,6 +6,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $taskName = "Hathor-PM2-Resurrect"
+$startupFolder = [Environment]::GetFolderPath("Startup")
+$startupCmdPath = Join-Path $startupFolder "Hathor-PM2-Resurrect.cmd"
 
 function Resolve-WorkspaceRoot {
   if ($WorkspacePath) {
@@ -39,8 +41,31 @@ function Remove-TaskIfExists {
   }
 }
 
+function Remove-StartupFallbackIfExists {
+  if (Test-Path $startupCmdPath) {
+    Remove-Item $startupCmdPath -Force
+    Write-Host "Removed startup fallback '$startupCmdPath'."
+  } else {
+    Write-Host "Startup fallback was not found."
+  }
+}
+
+function Set-StartupFallback {
+  $escapedWorkspace = $workspace.Replace("'", "''")
+  $cmdContent = @(
+    "@echo off",
+    "cd /d `"$workspace`"",
+    "pm2 resurrect"
+  ) -join "`r`n"
+
+  Set-Content -Path $startupCmdPath -Value $cmdContent -Encoding ASCII
+  Write-Host "Created startup fallback: $startupCmdPath"
+  Write-Host "It will run 'pm2 resurrect' at login without admin rights."
+}
+
 if ($Remove) {
   Remove-TaskIfExists
+  Remove-StartupFallbackIfExists
   exit 0
 }
 
@@ -72,10 +97,23 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
+try {
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
+  if (Test-Path $startupCmdPath) {
+    Remove-Item $startupCmdPath -Force
+  }
+  Write-Host "Scheduled task '$taskName' created."
+  Write-Host "It will run 'pm2 resurrect' each time you log in."
+} catch {
+  $message = $_.Exception.Message
+  if ($message -match "Access is denied") {
+    Write-Warning "Register-ScheduledTask was denied. Falling back to Startup folder."
+    Set-StartupFallback
+  } else {
+    throw
+  }
+}
 
-Write-Host "Scheduled task '$taskName' created."
-Write-Host "It will run 'pm2 resurrect' each time you log in."
 Write-Host "Workspace: $workspace"
 Write-Host ""
 Write-Host "To remove it later, run:"
