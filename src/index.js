@@ -74,6 +74,7 @@ async function safeInteractionReply(interaction, payload) {
 async function resolvePlayableInput(input) {
   const trimmed = input.trim();
   let videoUrl = null;
+  let sourceNote = null;
 
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
     const parsed = new URL(trimmed);
@@ -87,6 +88,32 @@ async function resolvePlayableInput(input) {
       videoUrl = `https://www.youtube.com/watch?v=${id}`;
     } else {
       videoUrl = trimmed;
+
+      // Playlist links without an explicit video should resolve to the first track.
+      if (parsed.searchParams.has("list") && !parsed.searchParams.has("v")) {
+        const playlistUrl = `https://www.youtube.com/playlist?list=${parsed.searchParams.get("list")}`;
+        const playlistInfo = await ytdlExec(playlistUrl, {
+          dumpSingleJson: true,
+          noWarnings: true,
+          skipDownload: true,
+          flatPlaylist: true,
+          playlistItems: "1",
+        });
+
+        const firstEntry =
+          Array.isArray(playlistInfo?.entries) && playlistInfo.entries.length > 0
+            ? playlistInfo.entries[0]
+            : null;
+
+        if (!firstEntry?.id) {
+          throw new Error("Could not find a playable track in that playlist.");
+        }
+
+        videoUrl = `https://www.youtube.com/watch?v=${firstEntry.id}`;
+        sourceNote = playlistInfo?.title
+          ? `From playlist: ${playlistInfo.title}`
+          : "From playlist input";
+      }
     }
   } else {
     const searchResult = await ytdlExec(`ytsearch1:${trimmed}`, {
@@ -122,6 +149,7 @@ async function resolvePlayableInput(input) {
     title: info.title || videoUrl,
     webpageUrl: info.webpage_url || videoUrl,
     streamUrl: info.url,
+    sourceNote,
   };
 }
 
@@ -289,7 +317,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       });
 
       state.player.play(resource);
-      await interaction.editReply(`Now playing: ${resolved.title}\n${resolved.webpageUrl}`);
+      const sourceLine = resolved.sourceNote ? `\n${resolved.sourceNote}` : "";
+      await interaction.editReply(
+        `Now playing: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`
+      );
     }
   } catch (error) {
     console.error("Interaction handling error:", error);
