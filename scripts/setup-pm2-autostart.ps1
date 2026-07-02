@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $taskName = "Hathor-PM2-Resurrect"
+$pm2Executable = $null
 
 function Resolve-WorkspaceRoot {
   if ($WorkspacePath) {
@@ -22,11 +23,31 @@ function Resolve-WorkspaceRoot {
 
 $workspace = Resolve-WorkspaceRoot
 
-function Ensure-Pm2Exists {
-  $pm2 = Get-Command pm2 -ErrorAction SilentlyContinue
-  if (-not $pm2) {
-    throw "PM2 is not installed or not on PATH. Install it with: npm install -g pm2"
+function Resolve-Pm2Executable {
+  $candidates = @(
+    (Join-Path $env:APPDATA "npm\pm2.cmd"),
+    (Join-Path $env:APPDATA "npm\pm2")
+  )
+
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path $candidate)) {
+      return $candidate
+    }
   }
+
+  $pm2 = Get-Command pm2 -ErrorAction SilentlyContinue
+  if ($pm2) {
+    if ($pm2.Path -like "*.ps1") {
+      $cmdPath = [System.IO.Path]::ChangeExtension($pm2.Path, ".cmd")
+      if (Test-Path $cmdPath) {
+        return $cmdPath
+      }
+    }
+
+    return $pm2.Path
+  }
+
+  throw "PM2 is not installed or not on PATH. Install it with: npm install -g pm2"
 }
 
 function Remove-TaskIfExists {
@@ -44,7 +65,7 @@ if ($Remove) {
   exit 0
 }
 
-Ensure-Pm2Exists
+$pm2Executable = Resolve-Pm2Executable
 
 if (-not (Test-Path (Join-Path $workspace "package.json"))) {
   throw "No package.json found in '$workspace'. Pass -WorkspacePath with your bot project root."
@@ -53,7 +74,7 @@ if (-not (Test-Path (Join-Path $workspace "package.json"))) {
 # Persist the current PM2 process list so resurrect has something to restore.
 Push-Location $workspace
 try {
-  pm2 save | Out-Null
+  & $pm2Executable save | Out-Null
 } finally {
   Pop-Location
 }
@@ -65,7 +86,8 @@ if ($existingTask) {
 
 $powerShellPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 $escapedWorkspace = $workspace.Replace("'", "''")
-$arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"Set-Location '$escapedWorkspace'; pm2 resurrect`""
+$escapedPm2Path = $pm2Executable.Replace("'", "''")
+$arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"Set-Location '$escapedWorkspace'; & '$escapedPm2Path' resurrect`""
 
 $action = New-ScheduledTaskAction -Execute $powerShellPath -Argument $arguments -WorkingDirectory $workspace
 $trigger = New-ScheduledTaskTrigger -AtLogOn

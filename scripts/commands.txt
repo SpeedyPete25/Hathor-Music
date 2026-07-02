@@ -1,0 +1,5 @@
+Enable autostart
+powershell -ExecutionPolicy Bypass -File scripts/setup-pm2-autostart.ps1
+
+Remove autostart
+powershell -ExecutionPolicy Bypass -File scripts/setup-pm2-autostart.ps1 -Remove
