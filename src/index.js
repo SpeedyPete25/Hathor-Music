@@ -19,6 +19,10 @@ const {
 } = require("@discordjs/voice");
 const ytdlExec = require("youtube-dl-exec");
 
+const RESOLVE_TIMEOUT_MS = 20_000;
+const CONNECT_TIMEOUT_MS = 15_000;
+const START_TIMEOUT_MS = 30_000;
+
 const token = process.env.DISCORD_TOKEN;
 
 if (!token) {
@@ -126,6 +130,19 @@ async function safeInteractionReply(interaction, payload) {
   }
 
   await interaction.reply(payload);
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([
+    promise.finally(() => clearTimeout(timeoutId)),
+    timeoutPromise,
+  ]);
 }
 
 function normalizePlayInput(rawInput) {
@@ -275,17 +292,20 @@ async function createTrackResource(track) {
 
 async function startTrack(guildId, track) {
   const state = guildAudioState.get(guildId);
-  if (!state) return;
+  if (!state) {
+    return { ok: false, error: new Error("Audio state was not found for this server.") };
+  }
 
   state.current = track;
 
   try {
     const resource = await createTrackResource(track);
     state.player.play(resource);
+    return { ok: true };
   } catch (error) {
     console.error("Failed to start track:", error);
     state.current = null;
-    await playNextTrack(guildId);
+    return { ok: false, error };
   }
 }
 
@@ -293,13 +313,18 @@ async function playNextTrack(guildId) {
   const state = guildAudioState.get(guildId);
   if (!state || state.cleaning) return;
 
-  const nextTrack = state.queue.shift();
-  if (!nextTrack) {
-    cleanupGuildAudio(guildId);
-    return;
+  while (state.queue.length > 0) {
+    const nextTrack = state.queue.shift();
+    const startResult = await startTrack(guildId, nextTrack);
+
+    if (startResult.ok) {
+      return;
+    }
+
+    console.error("Skipping unplayable queued track:", startResult.error);
   }
 
-  await startTrack(guildId, nextTrack);
+  cleanupGuildAudio(guildId);
 }
 
 client.once(Events.ClientReady, (readyClient) => {
@@ -354,6 +379,8 @@ client.once(Events.ClientReady, (readyClient) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+
+  let playShouldCleanupOnError = false;
 
   try {
     if (interaction.commandName === "ping") {
@@ -528,11 +555,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.deferReply();
 
       const existing = guildAudioState.get(interaction.guildId);
+      const hadActivePlayback = Boolean(existing?.current);
+
       if (existing && existing.connection.joinConfig.channelId !== memberChannel.id) {
         cleanupGuildAudio(interaction.guildId);
       }
 
-      const resolved = await resolvePlayableInput(input);
+      const resolved = await withTimeout(
+        resolvePlayableInput(input),
+        RESOLVE_TIMEOUT_MS,
+        "I couldn't resolve that track in time. Try another link or search."
+      );
+
       let state = guildAudioState.get(interaction.guildId);
       if (!state) {
         state = createGuildAudioState(
@@ -540,7 +574,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
           interaction.guild,
           memberChannel.id
         );
-        await entersState(state.connection, VoiceConnectionStatus.Ready, 15_000);
+        playShouldCleanupOnError = true;
+        await withTimeout(
+          entersState(state.connection, VoiceConnectionStatus.Ready, CONNECT_TIMEOUT_MS),
+          CONNECT_TIMEOUT_MS,
+          "Voice connection timed out. Check channel permissions and try again."
+        );
       }
 
       const sourceLine = resolved.sourceNote ? `\n${resolved.sourceNote}` : "";
@@ -553,15 +592,34 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-      await startTrack(interaction.guildId, resolved);
+      const startResult = await withTimeout(
+        startTrack(interaction.guildId, resolved),
+        START_TIMEOUT_MS,
+        "Playback start timed out. The source may be blocked or unavailable."
+      );
+
+      if (!startResult.ok) {
+        const details =
+          startResult.error && typeof startResult.error.message === "string"
+            ? startResult.error.message
+            : "Unknown playback error.";
+        throw new Error(`Failed to start playback: ${details}`);
+      }
+
+      playShouldCleanupOnError = false;
       await interaction.editReply(
         `Now playing: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`
       );
+
+      // If a command only queued while another track was active, never tear down that session.
+      if (hadActivePlayback) {
+        playShouldCleanupOnError = false;
+      }
     }
   } catch (error) {
     console.error("Interaction handling error:", error);
 
-    if (interaction.commandName === "play" && interaction.guildId) {
+    if (interaction.commandName === "play" && interaction.guildId && playShouldCleanupOnError) {
       cleanupGuildAudio(interaction.guildId);
     }
 
