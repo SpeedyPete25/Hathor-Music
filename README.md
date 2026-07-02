@@ -21,6 +21,8 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - `/ping` - Replies with Pong.
 - `/hathor` - Confirms the bot is listening.
 - `/play input:<youtube-link-or-search>` - Joins your current voice channel and plays audio (for playlist links, plays the first track).
+- `/queue` - Shows the current playing track and queued tracks.
+- `/skip` - Skips the current track and moves to the next queued track.
 - `/leave` - Disconnects Hathor from voice.
 
 ## Required Bot Permissions

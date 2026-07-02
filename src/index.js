@@ -294,6 +294,12 @@ client.once(Events.ClientReady, (readyClient) => {
     new SlashCommandBuilder()
       .setName("leave")
       .setDescription("Disconnect Hathor from voice."),
+    new SlashCommandBuilder()
+      .setName("queue")
+      .setDescription("Show the current queue."),
+    new SlashCommandBuilder()
+      .setName("skip")
+      .setDescription("Skip the current track."),
   ].map((command) => command.toJSON());
 
   readyClient.application.commands
@@ -325,6 +331,68 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       cleanupGuildAudio(interaction.guildId);
       await interaction.reply("Left the voice channel.");
+    }
+
+    if (interaction.commandName === "queue") {
+      if (!interaction.guildId) {
+        await interaction.reply({
+          content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const state = guildAudioState.get(interaction.guildId);
+      if (!state || !state.current) {
+        await interaction.reply({
+          content: "The queue is empty.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const upcoming = state.queue.length
+        ? state.queue
+            .slice(0, 10)
+            .map((track, index) => `${index + 1}. ${track.title}`)
+            .join("\n")
+        : "No upcoming tracks.";
+
+      const extraCount = state.queue.length > 10 ? `\n...and ${state.queue.length - 10} more.` : "";
+
+      await interaction.reply(
+        `Now playing: ${state.current.title}\n\nUp next:\n${upcoming}${extraCount}`
+      );
+    }
+
+    if (interaction.commandName === "skip") {
+      if (!interaction.guildId) {
+        await interaction.reply({
+          content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const state = guildAudioState.get(interaction.guildId);
+      if (!state || !state.current) {
+        await interaction.reply({
+          content: "Nothing is currently playing.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const skippedTitle = state.current.title;
+      state.current = null;
+      state.player.stop(true);
+
+      const nextTitle = state.queue[0]?.title;
+      if (nextTitle) {
+        await interaction.reply(`Skipped: ${skippedTitle}\nUp next: ${nextTitle}`);
+      } else {
+        await interaction.reply(`Skipped: ${skippedTitle}\nQueue is now empty.`);
+      }
     }
 
     if (interaction.commandName === "play") {
