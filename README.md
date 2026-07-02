@@ -23,6 +23,8 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - `/play input:<youtube-link-or-search>` - Joins your current voice channel and plays audio (for playlist links, plays the first track).
 - `/queue` - Shows the current playing track and queued tracks.
 - `/skip` - Skips the current track and moves to the next queued track.
+- `/clear` - Clears all upcoming tracks from the queue.
+- `/remove index:<number>` - Removes one upcoming track by queue position.
 - `/leave` - Disconnects Hathor from voice.
 
 ## Required Bot Permissions
@@ -90,6 +92,15 @@ If you see "invalid scopes provided for user installation", use Guild Install in
 ```
 
 3. Use `/leave` to disconnect the bot.
+
+Queue controls:
+
+```text
+/queue
+/skip
+/clear
+/remove index:2
+```
 
 ## Troubleshooting
 

@@ -300,6 +300,19 @@ client.once(Events.ClientReady, (readyClient) => {
     new SlashCommandBuilder()
       .setName("skip")
       .setDescription("Skip the current track."),
+    new SlashCommandBuilder()
+      .setName("clear")
+      .setDescription("Clear upcoming tracks from the queue."),
+    new SlashCommandBuilder()
+      .setName("remove")
+      .setDescription("Remove a queued track by its queue position.")
+      .addIntegerOption((option) =>
+        option
+          .setName("index")
+          .setDescription("Queue position from /queue (1 = first upcoming track)")
+          .setRequired(true)
+          .setMinValue(1)
+      ),
   ].map((command) => command.toJSON());
 
   readyClient.application.commands
@@ -393,6 +406,60 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } else {
         await interaction.reply(`Skipped: ${skippedTitle}\nQueue is now empty.`);
       }
+    }
+
+    if (interaction.commandName === "clear") {
+      if (!interaction.guildId) {
+        await interaction.reply({
+          content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const state = guildAudioState.get(interaction.guildId);
+      if (!state || state.queue.length === 0) {
+        await interaction.reply({
+          content: "There are no upcoming tracks to clear.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const clearedCount = state.queue.length;
+      state.queue = [];
+      await interaction.reply(`Cleared ${clearedCount} queued track(s).`);
+    }
+
+    if (interaction.commandName === "remove") {
+      if (!interaction.guildId) {
+        await interaction.reply({
+          content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const state = guildAudioState.get(interaction.guildId);
+      if (!state || state.queue.length === 0) {
+        await interaction.reply({
+          content: "There are no queued tracks to remove.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const index = interaction.options.getInteger("index", true);
+      if (index > state.queue.length) {
+        await interaction.reply({
+          content: `Invalid index. Choose a value between 1 and ${state.queue.length}.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const [removedTrack] = state.queue.splice(index - 1, 1);
+      await interaction.reply(`Removed #${index}: ${removedTrack.title}`);
     }
 
     if (interaction.commandName === "play") {
