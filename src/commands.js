@@ -213,6 +213,7 @@ async function handleInteraction(interaction, musicManager) {
         guildId: interaction.guildId,
         guild: interaction.guild,
         channelId: memberChannel.id,
+        textChannelId: interaction.channelId,
         input: interaction.options.getString("input", true),
       });
 

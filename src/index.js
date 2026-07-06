@@ -20,6 +20,16 @@ const musicManager = new MusicManager({
   connectTimeoutMs: CONNECT_TIMEOUT_MS,
   resolveTimeoutMs: RESOLVE_TIMEOUT_MS,
   startTimeoutMs: START_TIMEOUT_MS,
+  announcer: async ({ guildId, message }) => {
+    const state = musicManager.getState(guildId);
+    const channelId = state?.textChannelId;
+    if (!channelId) return;
+
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || typeof channel.send !== "function") return;
+
+    await channel.send(message);
+  },
 });
 
 client.once(Events.ClientReady, (readyClient) => {

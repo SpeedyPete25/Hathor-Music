@@ -12,11 +12,30 @@ const {
 const ytdlExec = require("youtube-dl-exec");
 
 class MusicManager {
-  constructor({ connectTimeoutMs, resolveTimeoutMs, startTimeoutMs }) {
+  constructor({ connectTimeoutMs, resolveTimeoutMs, startTimeoutMs, announcer }) {
     this.connectTimeoutMs = connectTimeoutMs;
     this.resolveTimeoutMs = resolveTimeoutMs;
     this.startTimeoutMs = startTimeoutMs;
+    this.announcer = announcer;
     this.guildAudioState = new Map();
+  }
+
+  getErrorMessage(error) {
+    if (error && typeof error.message === "string" && error.message.length < 180) {
+      return error.message;
+    }
+
+    return "Unknown playback error.";
+  }
+
+  async announce(guildId, message) {
+    if (!this.announcer) return;
+
+    try {
+      await this.announcer({ guildId, message });
+    } catch (error) {
+      console.error("Failed to announce playback message:", error);
+    }
   }
 
   getState(guildId) {
@@ -66,6 +85,7 @@ class MusicManager {
       cleaning: false,
       queue: [],
       current: null,
+      textChannelId: null,
     };
 
     connection.on("error", (error) => {
@@ -86,7 +106,16 @@ class MusicManager {
 
     player.on("error", async (error) => {
       console.error("Audio player error:", error);
+      const failedTrack = state.current;
       state.current = null;
+
+      if (failedTrack) {
+        await this.announce(
+          guildId,
+          `Playback failed for ${failedTrack.title}: ${this.getErrorMessage(error)}`
+        );
+      }
+
       await this.playNextTrack(guildId);
     });
 
@@ -290,6 +319,10 @@ class MusicManager {
       }
 
       console.error("Skipping unplayable queued track:", startResult.error);
+      await this.announce(
+        guildId,
+        `Skipped queued track ${nextTrack.title}: ${this.getErrorMessage(startResult.error)}`
+      );
     }
 
     this.cleanupGuildAudio(guildId);
@@ -312,7 +345,7 @@ class MusicManager {
     return { state, created };
   }
 
-  async playInput({ guildId, guild, channelId, input }) {
+  async playInput({ guildId, guild, channelId, textChannelId, input }) {
     const existing = this.guildAudioState.get(guildId);
 
     if (existing && existing.connection.joinConfig.channelId !== channelId) {
@@ -331,6 +364,7 @@ class MusicManager {
       const ensureResult = await this.ensureVoiceConnection(guildId, guild, channelId);
       const state = ensureResult.state;
       created = ensureResult.created;
+      state.textChannelId = textChannelId;
       const sourceLine = resolved.sourceNote ? `\n${resolved.sourceNote}` : "";
 
       if (state.current) {
