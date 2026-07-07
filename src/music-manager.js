@@ -21,11 +21,50 @@ class MusicManager {
   }
 
   getErrorMessage(error) {
-    if (error && typeof error.message === "string" && error.message.length < 180) {
-      return error.message;
+    if (!error || typeof error.message !== "string") {
+      return "Playback failed for an unknown reason.";
     }
 
-    return "Unknown playback error.";
+    const raw = error.message;
+    const normalized = raw.toLowerCase();
+
+    if (normalized.includes("timed out") || normalized.includes("timeout")) {
+      return "request timed out while contacting the source.";
+    }
+
+    if (
+      normalized.includes("video is not available") ||
+      normalized.includes("unavailable") ||
+      normalized.includes("not available")
+    ) {
+      return "that video is unavailable.";
+    }
+
+    if (normalized.includes("private video") || normalized.includes("private")) {
+      return "that video is private.";
+    }
+
+    if (normalized.includes("sign in") || normalized.includes("age-restricted")) {
+      return "that video is restricted and cannot be played by the bot.";
+    }
+
+    if (
+      normalized.includes("forbidden") ||
+      normalized.includes("403") ||
+      normalized.includes("audio source request failed (403)")
+    ) {
+      return "the source blocked playback (403). Try a different track.";
+    }
+
+    if (normalized.includes("connect") && normalized.includes("speak")) {
+      return "the bot is missing Connect/Speak permissions in that voice channel.";
+    }
+
+    if (raw.length < 140) {
+      return raw;
+    }
+
+    return "playback failed due to an upstream source error.";
   }
 
   async announce(guildId, message) {
