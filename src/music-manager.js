@@ -384,7 +384,7 @@ class MusicManager {
     return { state, created };
   }
 
-  async playInput({ guildId, guild, channelId, textChannelId, input }) {
+  async playInput({ guildId, guild, channelId, textChannelId, input, requesterId }) {
     const existing = this.guildAudioState.get(guildId);
 
     if (existing && existing.connection.joinConfig.channelId !== channelId) {
@@ -404,6 +404,7 @@ class MusicManager {
       const state = ensureResult.state;
       created = ensureResult.created;
       state.textChannelId = textChannelId;
+      resolved.requesterId = requesterId;
       const sourceLine = resolved.sourceNote ? `\n${resolved.sourceNote}` : "";
 
       if (state.current) {

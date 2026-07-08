@@ -102,6 +102,12 @@ Queue controls:
 /remove index:2
 ```
 
+Destructive command policy (`/skip`, `/clear`, `/remove`):
+
+- Allowed for the requester of the current track
+- Allowed for users in Hathor's current voice channel
+- Allowed for users with Manage Server permission
+
 ## Troubleshooting
 
 - Bot works only for you:

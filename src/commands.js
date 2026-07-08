@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require("discord.js");
+const { PermissionFlagsBits, SlashCommandBuilder } = require("discord.js");
 
 function buildCommands() {
   return [
@@ -54,6 +54,27 @@ async function safeInteractionReply(interaction, payload) {
   }
 
   await interaction.reply(payload);
+}
+
+async function canUseDestructiveCommand(interaction, state) {
+  if (!interaction.guild) return false;
+
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+
+  if (member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+    return true;
+  }
+
+  const botChannelId = state?.connection?.joinConfig?.channelId;
+  if (botChannelId && member.voice?.channelId === botChannelId) {
+    return true;
+  }
+
+  if (state?.current?.requesterId && state.current.requesterId === interaction.user.id) {
+    return true;
+  }
+
+  return false;
 }
 
 async function handleInteraction(interaction, musicManager) {
@@ -117,14 +138,26 @@ async function handleInteraction(interaction, musicManager) {
         return;
       }
 
-      const message = musicManager.skip(interaction.guildId);
-      if (!message) {
+      const state = musicManager.getState(interaction.guildId);
+      if (!state || !state.current) {
         await interaction.reply({
           content: "Nothing is currently playing.",
           ephemeral: true,
         });
         return;
       }
+
+      const allowed = await canUseDestructiveCommand(interaction, state);
+      if (!allowed) {
+        await interaction.reply({
+          content:
+            "You can only use this command if you requested the current track, are in Hathor's voice channel, or have Manage Server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const message = musicManager.skip(interaction.guildId);
 
       await interaction.reply(message);
       return;
@@ -139,14 +172,26 @@ async function handleInteraction(interaction, musicManager) {
         return;
       }
 
-      const clearedCount = musicManager.clear(interaction.guildId);
-      if (clearedCount === 0) {
+      const state = musicManager.getState(interaction.guildId);
+      if (!state || state.queue.length === 0) {
         await interaction.reply({
           content: "There are no upcoming tracks to clear.",
           ephemeral: true,
         });
         return;
       }
+
+      const allowed = await canUseDestructiveCommand(interaction, state);
+      if (!allowed) {
+        await interaction.reply({
+          content:
+            "You can only use this command if you requested the current track, are in Hathor's voice channel, or have Manage Server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const clearedCount = musicManager.clear(interaction.guildId);
 
       await interaction.reply(`Cleared ${clearedCount} queued track(s).`);
       return;
@@ -156,6 +201,25 @@ async function handleInteraction(interaction, musicManager) {
       if (!interaction.guildId) {
         await interaction.reply({
           content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const state = musicManager.getState(interaction.guildId);
+      if (!state || state.queue.length === 0) {
+        await interaction.reply({
+          content: "There are no queued tracks to remove.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const allowed = await canUseDestructiveCommand(interaction, state);
+      if (!allowed) {
+        await interaction.reply({
+          content:
+            "You can only use this command if you requested the current track, are in Hathor's voice channel, or have Manage Server.",
           ephemeral: true,
         });
         return;
@@ -215,6 +279,7 @@ async function handleInteraction(interaction, musicManager) {
         channelId: memberChannel.id,
         textChannelId: interaction.channelId,
         input: interaction.options.getString("input", true),
+        requesterId: interaction.user.id,
       });
 
       playShouldCleanupOnError = false;
