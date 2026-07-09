@@ -10,6 +10,7 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - Voice channel playback with `/play`.
 - YouTube URL support, including short links.
 - Search text support in `/play input`.
+- Queue persistence across bot restarts (resumes when `/play` is used again).
 - Crash-resilience improvements:
    - guarded cleanup for voice resources
    - safer interaction reply handling

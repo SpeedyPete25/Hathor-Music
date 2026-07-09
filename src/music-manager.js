@@ -1,4 +1,6 @@
 const { Readable } = require("node:stream");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -18,6 +20,101 @@ class MusicManager {
     this.startTimeoutMs = startTimeoutMs;
     this.announcer = announcer;
     this.guildAudioState = new Map();
+    this.dataDir = path.join(__dirname, "..", "data");
+    this.stateFilePath = path.join(this.dataDir, "music-state.json");
+    this.persistedGuildState = this.loadPersistedState();
+  }
+
+  loadPersistedState() {
+    try {
+      if (!fs.existsSync(this.stateFilePath)) {
+        return new Map();
+      }
+
+      const raw = fs.readFileSync(this.stateFilePath, "utf8");
+      const parsed = JSON.parse(raw);
+      return new Map(Object.entries(parsed || {}));
+    } catch (error) {
+      console.error("Failed to load persisted music state:", error);
+      return new Map();
+    }
+  }
+
+  writePersistedState() {
+    try {
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+
+      const data = Object.fromEntries(this.persistedGuildState.entries());
+      fs.writeFileSync(this.stateFilePath, JSON.stringify(data, null, 2), "utf8");
+    } catch (error) {
+      console.error("Failed to persist music state:", error);
+    }
+  }
+
+  sanitizeTrack(track) {
+    if (!track || typeof track !== "object") return null;
+
+    return {
+      title: track.title || "Unknown title",
+      webpageUrl: track.webpageUrl || null,
+      videoUrl: track.videoUrl || null,
+      sourceNote: track.sourceNote || null,
+      requesterId: track.requesterId || null,
+    };
+  }
+
+  persistState(guildId) {
+    const state = this.guildAudioState.get(guildId);
+
+    if (!state) {
+      this.persistedGuildState.delete(guildId);
+      this.writePersistedState();
+      return;
+    }
+
+    const current = this.sanitizeTrack(state.current);
+    const queue = state.queue.map((track) => this.sanitizeTrack(track)).filter(Boolean);
+
+    if (!current && queue.length === 0) {
+      this.persistedGuildState.delete(guildId);
+      this.writePersistedState();
+      return;
+    }
+
+    this.persistedGuildState.set(guildId, {
+      current,
+      queue,
+      textChannelId: state.textChannelId || null,
+      updatedAt: new Date().toISOString(),
+    });
+
+    this.writePersistedState();
+  }
+
+  restoreStateToQueue(state, guildId) {
+    const persisted = this.persistedGuildState.get(guildId);
+    if (!persisted) return;
+
+    const recoveredTracks = [];
+    const recoveredCurrent = this.sanitizeTrack(persisted.current);
+    if (recoveredCurrent && recoveredCurrent.videoUrl) {
+      recoveredTracks.push(recoveredCurrent);
+    }
+
+    for (const track of persisted.queue || []) {
+      const clean = this.sanitizeTrack(track);
+      if (clean && clean.videoUrl) {
+        recoveredTracks.push(clean);
+      }
+    }
+
+    if (recoveredTracks.length > 0) {
+      state.queue.push(...recoveredTracks);
+    }
+
+    state.textChannelId = persisted.textChannelId || state.textChannelId;
   }
 
   getErrorMessage(error) {
@@ -100,6 +197,7 @@ class MusicManager {
     }
 
     this.guildAudioState.delete(guildId);
+    this.persistState(guildId);
   }
 
   createGuildAudioState(guildId, guild, channelId) {
@@ -127,6 +225,8 @@ class MusicManager {
       textChannelId: null,
     };
 
+    this.restoreStateToQueue(state, guildId);
+
     connection.on("error", (error) => {
       console.error("Voice connection error:", error);
       this.cleanupGuildAudio(guildId);
@@ -147,6 +247,7 @@ class MusicManager {
       console.error("Audio player error:", error);
       const failedTrack = state.current;
       state.current = null;
+      this.persistState(guildId);
 
       if (failedTrack) {
         await this.announce(
@@ -161,11 +262,13 @@ class MusicManager {
     player.on(AudioPlayerStatus.Idle, async () => {
       if (!state.cleaning) {
         state.current = null;
+        this.persistState(guildId);
         await this.playNextTrack(guildId);
       }
     });
 
     this.guildAudioState.set(guildId, state);
+    this.persistState(guildId);
     return state;
   }
 
@@ -333,6 +436,7 @@ class MusicManager {
     }
 
     state.current = track;
+    this.persistState(guildId);
 
     try {
       const resource = await this.createTrackResource(track);
@@ -341,6 +445,7 @@ class MusicManager {
     } catch (error) {
       console.error("Failed to start track:", error);
       state.current = null;
+      this.persistState(guildId);
       return { ok: false, error };
     }
   }
@@ -351,6 +456,7 @@ class MusicManager {
 
     while (state.queue.length > 0) {
       const nextTrack = state.queue.shift();
+      this.persistState(guildId);
       const startResult = await this.startTrack(guildId, nextTrack);
 
       if (startResult.ok) {
@@ -405,13 +511,41 @@ class MusicManager {
       created = ensureResult.created;
       state.textChannelId = textChannelId;
       resolved.requesterId = requesterId;
+      this.persistState(guildId);
       const sourceLine = resolved.sourceNote ? `\n${resolved.sourceNote}` : "";
 
       if (state.current) {
         state.queue.push(resolved);
+        this.persistState(guildId);
         return {
           mode: "queued",
           message: `Queued #${state.queue.length}: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`,
+        };
+      }
+
+      if (state.queue.length > 0) {
+        state.queue.push(resolved);
+        this.persistState(guildId);
+
+        await this.playNextTrack(guildId);
+
+        const liveState = this.guildAudioState.get(guildId);
+        if (!liveState || !liveState.current) {
+          throw new Error("Failed to resume recovered queue.");
+        }
+
+        if (liveState.current.videoUrl === resolved.videoUrl) {
+          return {
+            mode: "playing",
+            message: `Now playing: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`,
+          };
+        }
+
+        return {
+          mode: "queued",
+          message:
+            `Resumed recovered queue with: ${liveState.current.title}\n` +
+            `Added to queue: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`,
         };
       }
 
@@ -445,7 +579,32 @@ class MusicManager {
   getQueueView(guildId) {
     const state = this.guildAudioState.get(guildId);
     if (!state || !state.current) {
-      return null;
+      const persisted = this.persistedGuildState.get(guildId);
+      if (!persisted) {
+        return null;
+      }
+
+      const recoveredCurrent = this.sanitizeTrack(persisted.current);
+      const recoveredQueue = (persisted.queue || [])
+        .map((track) => this.sanitizeTrack(track))
+        .filter(Boolean);
+
+      if (!recoveredCurrent && recoveredQueue.length === 0) {
+        return null;
+      }
+
+      const upcoming = recoveredQueue.length
+        ? recoveredQueue
+            .slice(0, 10)
+            .map((track, index) => `${index + 1}. ${track.title}`)
+            .join("\n")
+        : "No upcoming tracks.";
+
+      const nowLine = recoveredCurrent
+        ? `Recovered current track: ${recoveredCurrent.title}`
+        : "No recovered current track.";
+
+      return `${nowLine}\n\nRecovered queue:\n${upcoming}\n\nUse /play in a voice channel to resume playback.`;
     }
 
     const upcoming = state.queue.length
@@ -468,6 +627,7 @@ class MusicManager {
 
     const skippedTitle = state.current.title;
     state.current = null;
+    this.persistState(guildId);
     state.player.stop(true);
 
     const nextTitle = state.queue[0]?.title;
@@ -486,6 +646,7 @@ class MusicManager {
 
     const clearedCount = state.queue.length;
     state.queue = [];
+    this.persistState(guildId);
     return clearedCount;
   }
 
@@ -502,6 +663,7 @@ class MusicManager {
     }
 
     const [removedTrack] = state.queue.splice(index - 1, 1);
+    this.persistState(guildId);
     return { removedTrack };
   }
 }
