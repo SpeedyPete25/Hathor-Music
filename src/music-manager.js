@@ -19,6 +19,7 @@ class MusicManager {
     this.resolveTimeoutMs = resolveTimeoutMs;
     this.startTimeoutMs = startTimeoutMs;
     this.announcer = announcer;
+    this.idleDisconnectMs = 60_000;
     this.guildAudioState = new Map();
     this.dataDir = path.join(__dirname, "..", "data");
     this.stateFilePath = path.join(this.dataDir, "music-state.json");
@@ -184,6 +185,11 @@ class MusicManager {
 
     state.cleaning = true;
 
+    if (state.leaveTimer) {
+      clearTimeout(state.leaveTimer);
+      state.leaveTimer = null;
+    }
+
     try {
       state.player.stop(true);
     } catch (error) {
@@ -223,6 +229,7 @@ class MusicManager {
       queue: [],
       current: null,
       textChannelId: null,
+      leaveTimer: null,
     };
 
     this.restoreStateToQueue(state, guildId);
@@ -435,6 +442,11 @@ class MusicManager {
       };
     }
 
+    if (state.leaveTimer) {
+      clearTimeout(state.leaveTimer);
+      state.leaveTimer = null;
+    }
+
     state.current = track;
     this.persistState(guildId);
 
@@ -470,7 +482,27 @@ class MusicManager {
       );
     }
 
-    this.cleanupGuildAudio(guildId);
+    this.scheduleCleanup(guildId);
+  }
+
+  scheduleCleanup(guildId) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state || state.cleaning) return;
+
+    if (state.leaveTimer) {
+      clearTimeout(state.leaveTimer);
+    }
+
+    state.leaveTimer = setTimeout(() => {
+      const liveState = this.guildAudioState.get(guildId);
+      if (!liveState || liveState.cleaning) return;
+
+      if (liveState.current || liveState.queue.length > 0) {
+        return;
+      }
+
+      this.cleanupGuildAudio(guildId);
+    }, this.idleDisconnectMs);
   }
 
   async ensureVoiceConnection(guildId, guild, channelId) {

@@ -11,6 +11,7 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - YouTube URL support, including short links.
 - Search text support in `/play input`.
 - Queue persistence across bot restarts (resumes when `/play` is used again).
+- Stays in voice channel for 1 minute after music stops, then disconnects.
 - Crash-resilience improvements:
    - guarded cleanup for voice resources
    - safer interaction reply handling
