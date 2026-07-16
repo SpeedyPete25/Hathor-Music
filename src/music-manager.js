@@ -87,6 +87,7 @@ class MusicManager {
     this.persistedGuildState.set(guildId, {
       current,
       queue,
+      loopMode: state.loopMode || "off",
       textChannelId: state.textChannelId || null,
       updatedAt: new Date().toISOString(),
     });
@@ -116,6 +117,9 @@ class MusicManager {
     }
 
     state.textChannelId = persisted.textChannelId || state.textChannelId;
+    state.loopMode = ["off", "track", "queue"].includes(persisted.loopMode)
+      ? persisted.loopMode
+      : "off";
   }
 
   getErrorMessage(error) {
@@ -230,6 +234,7 @@ class MusicManager {
       current: null,
       textChannelId: null,
       leaveTimer: null,
+      loopMode: "off",
     };
 
     this.restoreStateToQueue(state, guildId);
@@ -466,6 +471,26 @@ class MusicManager {
     const state = this.guildAudioState.get(guildId);
     if (!state || state.cleaning) return;
 
+    if (state.loopMode === "track" && state.current) {
+      const replayTrack = { ...state.current };
+      const startResult = await this.startTrack(guildId, replayTrack);
+
+      if (startResult.ok) {
+        return;
+      }
+
+      console.error("Failed to replay looped track:", startResult.error);
+      await this.announce(
+        guildId,
+        `Looped track failed ${replayTrack.title}: ${this.getErrorMessage(startResult.error)}`
+      );
+    }
+
+    if (state.loopMode === "queue" && state.current) {
+      state.queue.push({ ...state.current });
+      this.persistState(guildId);
+    }
+
     while (state.queue.length > 0) {
       const nextTrack = state.queue.shift();
       this.persistState(guildId);
@@ -697,6 +722,112 @@ class MusicManager {
     const [removedTrack] = state.queue.splice(index - 1, 1);
     this.persistState(guildId);
     return { removedTrack };
+  }
+
+  playNext(guildId, track) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state) {
+      return { error: "Nothing is currently active. Start playback first." };
+    }
+
+    state.queue.unshift(track);
+    this.persistState(guildId);
+    return { position: 1, track };
+  }
+
+  move(guildId, fromIndex, toIndex) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state || state.queue.length === 0) {
+      return { error: "There are no queued tracks to move." };
+    }
+
+    if (fromIndex < 1 || fromIndex > state.queue.length) {
+      return {
+        error: `Invalid from index. Choose a value between 1 and ${state.queue.length}.`,
+      };
+    }
+
+    if (toIndex < 1 || toIndex > state.queue.length) {
+      return {
+        error: `Invalid to index. Choose a value between 1 and ${state.queue.length}.`,
+      };
+    }
+
+    const [track] = state.queue.splice(fromIndex - 1, 1);
+    state.queue.splice(toIndex - 1, 0, track);
+    this.persistState(guildId);
+
+    return { track, fromIndex, toIndex };
+  }
+
+  swap(guildId, firstIndex, secondIndex) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state || state.queue.length < 2) {
+      return { error: "Need at least two queued tracks to swap." };
+    }
+
+    if (firstIndex < 1 || firstIndex > state.queue.length) {
+      return {
+        error: `Invalid first index. Choose a value between 1 and ${state.queue.length}.`,
+      };
+    }
+
+    if (secondIndex < 1 || secondIndex > state.queue.length) {
+      return {
+        error: `Invalid second index. Choose a value between 1 and ${state.queue.length}.`,
+      };
+    }
+
+    if (firstIndex === secondIndex) {
+      return { error: "Choose two different indices to swap." };
+    }
+
+    const firstZero = firstIndex - 1;
+    const secondZero = secondIndex - 1;
+    const firstTrack = state.queue[firstZero];
+    const secondTrack = state.queue[secondZero];
+
+    state.queue[firstZero] = secondTrack;
+    state.queue[secondZero] = firstTrack;
+    this.persistState(guildId);
+
+    return { firstTrack, secondTrack, firstIndex, secondIndex };
+  }
+
+  shuffle(guildId) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state || state.queue.length < 2) {
+      return { error: "Need at least two queued tracks to shuffle." };
+    }
+
+    for (let i = state.queue.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [state.queue[i], state.queue[j]] = [state.queue[j], state.queue[i]];
+    }
+
+    this.persistState(guildId);
+    return { count: state.queue.length };
+  }
+
+  setLoopMode(guildId, mode) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state) {
+      return { error: "Nothing is currently active. Start playback first." };
+    }
+
+    const allowedModes = new Set(["off", "track", "queue"]);
+    if (!allowedModes.has(mode)) {
+      return { error: "Invalid loop mode. Use off, track, or queue." };
+    }
+
+    state.loopMode = mode;
+    this.persistState(guildId);
+    return { mode };
+  }
+
+  getLoopMode(guildId) {
+    const state = this.guildAudioState.get(guildId);
+    return state?.loopMode || "off";
   }
 }
 

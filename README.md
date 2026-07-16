@@ -27,6 +27,12 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - `/skip` - Skips the current track and moves to the next queued track.
 - `/clear` - Clears all upcoming tracks from the queue.
 - `/remove index:<number>` - Removes one upcoming track by queue position.
+- `/playnext input:<youtube-link-or-search>` - Adds a track to the front of the queue.
+- `/move from:<number> to:<number>` - Moves a queued track to a new queue position.
+- `/swap first:<number> second:<number>` - Swaps two queued tracks.
+- `/shuffle` - Randomizes upcoming queue order.
+- `/loop mode:<off|track|queue>` - Sets loop mode.
+- `/repeat mode:<off|track|queue>` - Alias for `/loop`.
 - `/leave` - Disconnects Hathor from voice.
 
 ## Required Bot Permissions
@@ -102,9 +108,14 @@ Queue controls:
 /skip
 /clear
 /remove index:2
+/playnext input:lofi hip hop radio
+/move from:5 to:1
+/swap first:1 second:3
+/shuffle
+/loop mode:queue
 ```
 
-Destructive command policy (`/skip`, `/clear`, `/remove`):
+Destructive command policy (`/skip`, `/clear`, `/remove`, `/playnext`, `/move`, `/swap`, `/shuffle`, `/loop`, `/repeat`):
 
 - Allowed for the requester of the current track
 - Allowed for users in Hathor's current voice channel
