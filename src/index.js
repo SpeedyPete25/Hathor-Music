@@ -16,11 +16,13 @@ const client = new Client({
   ],
 });
 
+const nowPlayingMessageIds = new Map();
+
 const musicManager = new MusicManager({
   connectTimeoutMs: CONNECT_TIMEOUT_MS,
   resolveTimeoutMs: RESOLVE_TIMEOUT_MS,
   startTimeoutMs: START_TIMEOUT_MS,
-  announcer: async ({ guildId, message }) => {
+  announcer: async ({ guildId, message, embed, nowPlaying }) => {
     const state = musicManager.getState(guildId);
     const channelId = state?.textChannelId;
     if (!channelId) return;
@@ -28,7 +30,43 @@ const musicManager = new MusicManager({
     const channel = await client.channels.fetch(channelId);
     if (!channel || typeof channel.send !== "function") return;
 
-    await channel.send(message);
+    if (nowPlaying && embed) {
+      const existingMessageId = nowPlayingMessageIds.get(guildId);
+
+      if (existingMessageId) {
+        try {
+          const existing = await channel.messages.fetch(existingMessageId);
+          await existing.edit({
+            content: message || null,
+            embeds: [embed],
+          });
+          return;
+        } catch (error) {
+          console.warn("Failed to edit now-playing message, sending a new one:", error);
+        }
+      }
+
+      const sent = await channel.send({
+        content: message || undefined,
+        embeds: [embed],
+      });
+      nowPlayingMessageIds.set(guildId, sent.id);
+      return;
+    }
+
+    if (embed && message) {
+      await channel.send({ content: message, embeds: [embed] });
+      return;
+    }
+
+    if (embed) {
+      await channel.send({ embeds: [embed] });
+      return;
+    }
+
+    if (message) {
+      await channel.send(message);
+    }
   },
 });
 

@@ -63,6 +63,11 @@ class MusicManager {
       videoUrl: track.videoUrl || null,
       sourceNote: track.sourceNote || null,
       requesterId: track.requesterId || null,
+      durationSeconds:
+        typeof track.durationSeconds === "number" && Number.isFinite(track.durationSeconds)
+          ? track.durationSeconds
+          : null,
+      thumbnailUrl: track.thumbnailUrl || null,
     };
   }
 
@@ -169,14 +174,134 @@ class MusicManager {
     return "playback failed due to an upstream source error.";
   }
 
-  async announce(guildId, message) {
+  async announce(guildId, payload) {
     if (!this.announcer) return;
 
     try {
-      await this.announcer({ guildId, message });
+      if (typeof payload === "string") {
+        await this.announcer({ guildId, message: payload });
+        return;
+      }
+
+      await this.announcer({ guildId, ...payload });
     } catch (error) {
       console.error("Failed to announce playback message:", error);
     }
+  }
+
+  formatDuration(totalSeconds) {
+    if (typeof totalSeconds !== "number" || !Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+      return "Unknown";
+    }
+
+    const rounded = Math.floor(totalSeconds);
+    const hours = Math.floor(rounded / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    const seconds = rounded % 60;
+
+    if (hours > 0) {
+      return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    }
+
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  buildProgressBar(elapsedSeconds, totalSeconds) {
+    if (
+      typeof elapsedSeconds !== "number" ||
+      !Number.isFinite(elapsedSeconds) ||
+      typeof totalSeconds !== "number" ||
+      !Number.isFinite(totalSeconds) ||
+      totalSeconds <= 0
+    ) {
+      return "Live stream";
+    }
+
+    const width = 16;
+    const ratio = Math.min(1, Math.max(0, elapsedSeconds / totalSeconds));
+    const marker = Math.min(width - 1, Math.floor(ratio * width));
+    const chars = [];
+
+    for (let i = 0; i < width; i += 1) {
+      if (i === marker) {
+        chars.push("o");
+      } else if (i < marker) {
+        chars.push("=");
+      } else {
+        chars.push("-");
+      }
+    }
+
+    return `[${chars.join("")}]`;
+  }
+
+  buildSourceLabel(track) {
+    if (!track?.webpageUrl) {
+      return "Unknown source";
+    }
+
+    try {
+      const parsed = new URL(track.webpageUrl);
+      const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+
+      if (host.includes("youtube.com") || host.includes("youtu.be")) {
+        return "YouTube";
+      }
+
+      return host;
+    } catch {
+      return "Unknown source";
+    }
+  }
+
+  buildNowPlayingEmbed(track, state) {
+    const elapsedSeconds = Math.max(0, (Date.now() - (track.startedAt || Date.now())) / 1000);
+    const durationText = this.formatDuration(track.durationSeconds);
+    const elapsedText = this.formatDuration(elapsedSeconds);
+    const progressBar = this.buildProgressBar(elapsedSeconds, track.durationSeconds);
+    const sourceLabel = this.buildSourceLabel(track);
+
+    const embed = {
+      color: 0xd4af37,
+      title: "Now Playing",
+      description: track.webpageUrl
+        ? `[${track.title}](${track.webpageUrl})`
+        : track.title,
+      fields: [
+        {
+          name: "Progress",
+          value:
+            durationText === "Unknown"
+              ? `${progressBar}\n${elapsedText} / Unknown`
+              : `${progressBar}\n${elapsedText} / ${durationText}`,
+        },
+        {
+          name: "Requester",
+          value: track.requesterId ? `<@${track.requesterId}>` : "Unknown",
+          inline: true,
+        },
+        {
+          name: "Duration",
+          value: durationText,
+          inline: true,
+        },
+        {
+          name: "Source",
+          value: track.webpageUrl ? `[${sourceLabel}](${track.webpageUrl})` : sourceLabel,
+          inline: true,
+        },
+      ],
+      timestamp: new Date().toISOString(),
+      footer: {
+        text: `Loop mode: ${state?.loopMode || "off"}`,
+      },
+    };
+
+    if (track.thumbnailUrl) {
+      embed.thumbnail = { url: track.thumbnailUrl };
+    }
+
+    return embed;
   }
 
   getState(guildId) {
@@ -193,6 +318,8 @@ class MusicManager {
       clearTimeout(state.leaveTimer);
       state.leaveTimer = null;
     }
+
+    this.stopNowPlayingTicker(guildId);
 
     try {
       state.player.stop(true);
@@ -235,6 +362,7 @@ class MusicManager {
       textChannelId: null,
       leaveTimer: null,
       loopMode: "off",
+      nowPlayingTicker: null,
     };
 
     this.restoreStateToQueue(state, guildId);
@@ -258,6 +386,7 @@ class MusicManager {
     player.on("error", async (error) => {
       console.error("Audio player error:", error);
       const failedTrack = state.current;
+      this.stopNowPlayingTicker(guildId);
       state.current = null;
       this.persistState(guildId);
 
@@ -273,6 +402,7 @@ class MusicManager {
 
     player.on(AudioPlayerStatus.Idle, async () => {
       if (!state.cleaning) {
+        this.stopNowPlayingTicker(guildId);
         state.current = null;
         this.persistState(guildId);
         await this.playNextTrack(guildId);
@@ -403,6 +533,12 @@ class MusicManager {
       webpageUrl: info.webpage_url || videoUrl,
       videoUrl,
       sourceNote,
+      durationSeconds:
+        typeof info.duration === "number" && Number.isFinite(info.duration) ? info.duration : null,
+      thumbnailUrl:
+        (Array.isArray(info.thumbnails) && info.thumbnails.length > 0
+          ? info.thumbnails[info.thumbnails.length - 1]?.url
+          : null) || info.thumbnail || null,
     };
   }
 
@@ -452,19 +588,56 @@ class MusicManager {
       state.leaveTimer = null;
     }
 
+    track.startedAt = Date.now();
     state.current = track;
     this.persistState(guildId);
 
     try {
       const resource = await this.createTrackResource(track);
       state.player.play(resource);
+
+      await this.announce(guildId, {
+        embed: this.buildNowPlayingEmbed(track, state),
+        nowPlaying: true,
+      });
+      this.startNowPlayingTicker(guildId);
+
       return { ok: true };
     } catch (error) {
       console.error("Failed to start track:", error);
+      this.stopNowPlayingTicker(guildId);
       state.current = null;
       this.persistState(guildId);
       return { ok: false, error };
     }
+  }
+
+  startNowPlayingTicker(guildId) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state) return;
+
+    this.stopNowPlayingTicker(guildId);
+
+    state.nowPlayingTicker = setInterval(async () => {
+      const liveState = this.guildAudioState.get(guildId);
+      if (!liveState || liveState.cleaning || !liveState.current) {
+        this.stopNowPlayingTicker(guildId);
+        return;
+      }
+
+      await this.announce(guildId, {
+        embed: this.buildNowPlayingEmbed(liveState.current, liveState),
+        nowPlaying: true,
+      });
+    }, 12_000);
+  }
+
+  stopNowPlayingTicker(guildId) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state || !state.nowPlayingTicker) return;
+
+    clearInterval(state.nowPlayingTicker);
+    state.nowPlayingTicker = null;
   }
 
   async playNextTrack(guildId) {
@@ -595,6 +768,7 @@ class MusicManager {
           return {
             mode: "playing",
             message: `Now playing: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`,
+            embed: this.buildNowPlayingEmbed(liveState.current, liveState),
           };
         }
 
@@ -623,6 +797,7 @@ class MusicManager {
       return {
         mode: "playing",
         message: `Now playing: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`,
+        embed: this.buildNowPlayingEmbed(resolved, state),
       };
     } catch (error) {
       if (created) {

@@ -10,6 +10,8 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - Voice channel playback with `/play`.
 - YouTube URL support, including short links.
 - Search text support in `/play input`.
+- Rich now-playing embeds with progress bar, requester, duration, source, and thumbnail.
+- Live now-playing progress updates (same message edited every ~12 seconds while active).
 - Queue persistence across bot restarts (resumes when `/play` is used again).
 - Stays in voice channel for 1 minute after music stops, then disconnects.
 - Crash-resilience improvements:
