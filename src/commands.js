@@ -113,6 +113,16 @@ function buildCommands() {
             { name: "Queue", value: "queue" }
           )
       ),
+    new SlashCommandBuilder()
+      .setName("autoplay")
+      .setDescription("View or change autoplay mode for this server.")
+      .addStringOption((option) =>
+        option
+          .setName("mode")
+          .setDescription("Autoplay mode")
+          .setRequired(false)
+          .addChoices({ name: "On", value: "on" }, { name: "Off", value: "off" })
+      ),
   ].map((command) => command.toJSON());
 }
 
@@ -486,6 +496,37 @@ async function handleInteraction(interaction, musicManager) {
       }
 
       await interaction.reply(`Loop mode set to: ${result.mode}`);
+      return;
+    }
+
+    if (interaction.commandName === "autoplay") {
+      if (!interaction.guildId) {
+        await interaction.reply({
+          content: "This command can only be used in a server.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const mode = interaction.options.getString("mode", false);
+      if (!mode) {
+        const enabled = musicManager.getGuildAutoplay(interaction.guildId);
+        await interaction.reply(`Autoplay is currently ${enabled ? "on" : "off"}.`);
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(interaction.user.id);
+      const canManage = member.permissions.has(PermissionFlagsBits.ManageGuild);
+      if (!canManage) {
+        await interaction.reply({
+          content: "You need Manage Server to change autoplay mode.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const enabled = musicManager.setGuildAutoplay(interaction.guildId, mode === "on");
+      await interaction.reply(`Autoplay is now ${enabled ? "on" : "off"}.`);
       return;
     }
 

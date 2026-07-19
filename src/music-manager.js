@@ -23,7 +23,37 @@ class MusicManager {
     this.guildAudioState = new Map();
     this.dataDir = path.join(__dirname, "..", "data");
     this.stateFilePath = path.join(this.dataDir, "music-state.json");
+    this.settingsFilePath = path.join(this.dataDir, "guild-settings.json");
     this.persistedGuildState = this.loadPersistedState();
+    this.guildSettings = this.loadGuildSettings();
+  }
+
+  loadGuildSettings() {
+    try {
+      if (!fs.existsSync(this.settingsFilePath)) {
+        return new Map();
+      }
+
+      const raw = fs.readFileSync(this.settingsFilePath, "utf8");
+      const parsed = JSON.parse(raw);
+      return new Map(Object.entries(parsed || {}));
+    } catch (error) {
+      console.error("Failed to load guild settings:", error);
+      return new Map();
+    }
+  }
+
+  writeGuildSettings() {
+    try {
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+
+      const data = Object.fromEntries(this.guildSettings.entries());
+      fs.writeFileSync(this.settingsFilePath, JSON.stringify(data, null, 2), "utf8");
+    } catch (error) {
+      console.error("Failed to persist guild settings:", error);
+    }
   }
 
   loadPersistedState() {
@@ -308,6 +338,25 @@ class MusicManager {
     return this.guildAudioState.get(guildId);
   }
 
+  getGuildAutoplay(guildId) {
+    const entry = this.guildSettings.get(guildId);
+    return Boolean(entry?.autoplay);
+  }
+
+  setGuildAutoplay(guildId, autoplay) {
+    const value = Boolean(autoplay);
+    this.guildSettings.set(guildId, { autoplay: value, updatedAt: new Date().toISOString() });
+    this.writeGuildSettings();
+
+    const state = this.guildAudioState.get(guildId);
+    if (state) {
+      state.autoplay = value;
+      this.persistState(guildId);
+    }
+
+    return value;
+  }
+
   cleanupGuildAudio(guildId) {
     const state = this.guildAudioState.get(guildId);
     if (!state || state.cleaning) return;
@@ -362,7 +411,9 @@ class MusicManager {
       textChannelId: null,
       leaveTimer: null,
       loopMode: "off",
+      autoplay: this.getGuildAutoplay(guildId),
       nowPlayingTicker: null,
+      history: [],
     };
 
     this.restoreStateToQueue(state, guildId);
@@ -403,9 +454,10 @@ class MusicManager {
     player.on(AudioPlayerStatus.Idle, async () => {
       if (!state.cleaning) {
         this.stopNowPlayingTicker(guildId);
+        const finishedTrack = state.current ? { ...state.current } : null;
         state.current = null;
         this.persistState(guildId);
-        await this.playNextTrack(guildId);
+        await this.playNextTrack(guildId, finishedTrack);
       }
     });
 
@@ -596,6 +648,13 @@ class MusicManager {
       const resource = await this.createTrackResource(track);
       state.player.play(resource);
 
+      if (track.videoUrl) {
+        state.history.push(track.videoUrl);
+        if (state.history.length > 25) {
+          state.history = state.history.slice(state.history.length - 25);
+        }
+      }
+
       await this.announce(guildId, {
         embed: this.buildNowPlayingEmbed(track, state),
         nowPlaying: true,
@@ -640,12 +699,62 @@ class MusicManager {
     state.nowPlayingTicker = null;
   }
 
-  async playNextTrack(guildId) {
+  async resolveAutoplayTrack(seedTrack, state) {
+    if (!seedTrack?.title) {
+      return null;
+    }
+
+    const searchResult = await ytdlExec(`ytsearch8:${seedTrack.title}`, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      skipDownload: true,
+    });
+
+    const entries = Array.isArray(searchResult?.entries)
+      ? searchResult.entries
+      : searchResult?.id
+        ? [searchResult]
+        : [];
+
+    const queuedVideoUrls = new Set((state.queue || []).map((track) => track.videoUrl).filter(Boolean));
+    const history = new Set(state.history || []);
+
+    for (const entry of entries) {
+      if (!entry?.id) continue;
+
+      const videoUrl = `https://www.youtube.com/watch?v=${entry.id}`;
+      if (videoUrl === seedTrack.videoUrl) continue;
+      if (queuedVideoUrls.has(videoUrl)) continue;
+      if (history.has(videoUrl)) continue;
+
+      return {
+        title: entry.title || videoUrl,
+        webpageUrl: entry.webpage_url || videoUrl,
+        videoUrl,
+        sourceNote: `Autoplay from: ${seedTrack.title}`,
+        requesterId: null,
+        durationSeconds:
+          typeof entry.duration === "number" && Number.isFinite(entry.duration)
+            ? entry.duration
+            : null,
+        thumbnailUrl:
+          (Array.isArray(entry.thumbnails) && entry.thumbnails.length > 0
+            ? entry.thumbnails[entry.thumbnails.length - 1]?.url
+            : null) || entry.thumbnail || null,
+      };
+    }
+
+    return null;
+  }
+
+  async playNextTrack(guildId, previousTrack = null) {
     const state = this.guildAudioState.get(guildId);
     if (!state || state.cleaning) return;
 
-    if (state.loopMode === "track" && state.current) {
-      const replayTrack = { ...state.current };
+    const seedTrack = previousTrack || state.current;
+
+    if (state.loopMode === "track" && seedTrack) {
+      const replayTrack = { ...seedTrack };
       const startResult = await this.startTrack(guildId, replayTrack);
 
       if (startResult.ok) {
@@ -659,8 +768,8 @@ class MusicManager {
       );
     }
 
-    if (state.loopMode === "queue" && state.current) {
-      state.queue.push({ ...state.current });
+    if (state.loopMode === "queue" && seedTrack) {
+      state.queue.push({ ...seedTrack });
       this.persistState(guildId);
     }
 
@@ -678,6 +787,25 @@ class MusicManager {
         guildId,
         `Skipped queued track ${nextTrack.title}: ${this.getErrorMessage(startResult.error)}`
       );
+    }
+
+    if (state.autoplay && seedTrack) {
+      try {
+        const autoplayTrack = await this.resolveAutoplayTrack(seedTrack, state);
+        if (autoplayTrack) {
+          state.queue.push(autoplayTrack);
+          this.persistState(guildId);
+          await this.announce(
+            guildId,
+            `Autoplay queued: ${autoplayTrack.title}\n${autoplayTrack.webpageUrl}`
+          );
+          await this.playNextTrack(guildId);
+          return;
+        }
+      } catch (error) {
+        console.error("Autoplay resolution failed:", error);
+        await this.announce(guildId, `Autoplay failed: ${this.getErrorMessage(error)}`);
+      }
     }
 
     this.scheduleCleanup(guildId);

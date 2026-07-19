@@ -12,6 +12,7 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - Search text support in `/play input`.
 - Rich now-playing embeds with progress bar, requester, duration, source, and thumbnail.
 - Live now-playing progress updates (same message edited every ~12 seconds while active).
+- Optional per-guild autoplay mode to keep music going with related tracks.
 - Queue persistence across bot restarts (resumes when `/play` is used again).
 - Stays in voice channel for 1 minute after music stops, then disconnects.
 - Crash-resilience improvements:
@@ -35,6 +36,7 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - `/shuffle` - Randomizes upcoming queue order.
 - `/loop mode:<off|track|queue>` - Sets loop mode.
 - `/repeat mode:<off|track|queue>` - Alias for `/loop`.
+- `/autoplay [mode:<on|off>]` - Shows autoplay status or updates it (Manage Server required to change).
 - `/leave` - Disconnects Hathor from voice.
 
 ## Required Bot Permissions
@@ -115,6 +117,7 @@ Queue controls:
 /swap first:1 second:3
 /shuffle
 /loop mode:queue
+/autoplay mode:on
 ```
 
 Destructive command policy (`/skip`, `/clear`, `/remove`, `/playnext`, `/move`, `/swap`, `/shuffle`, `/loop`, `/repeat`):
