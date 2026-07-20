@@ -15,6 +15,10 @@ It supports slash commands, joins the caller's active voice channel, and plays a
 - Optional per-guild autoplay mode to keep music going with related tracks.
 - Queue persistence across bot restarts (resumes when `/play` is used again).
 - Stays in voice channel for 1 minute after music stops, then disconnects.
+- Abuse protection on track requests:
+   - per-user add-track cooldown
+   - max total queue size per server
+   - max track duration cap
 - Crash-resilience improvements:
    - guarded cleanup for voice resources
    - safer interaction reply handling
@@ -125,6 +129,13 @@ Destructive command policy (`/skip`, `/clear`, `/remove`, `/playnext`, `/move`, 
 - Allowed for the requester of the current track
 - Allowed for users in Hathor's current voice channel
 - Allowed for users with Manage Server permission
+
+Track request limits:
+
+- Default cooldown: 8 seconds between track-add requests per user
+- Default queue cap: 25 total tracks per server (current + queued)
+- Default duration cap: 15 minutes per track
+- Optional env overrides: `PLAY_COOLDOWN_MS`, `MAX_QUEUE_LENGTH`, `MAX_TRACK_DURATION_SECONDS`
 
 ## Troubleshooting
 

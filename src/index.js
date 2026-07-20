@@ -1,6 +1,9 @@
 const { Client, Events, GatewayIntentBits } = require("discord.js");
 const {
   CONNECT_TIMEOUT_MS,
+  MAX_QUEUE_LENGTH,
+  MAX_TRACK_DURATION_SECONDS,
+  PLAY_COOLDOWN_MS,
   RESOLVE_TIMEOUT_MS,
   START_TIMEOUT_MS,
   token,
@@ -20,6 +23,9 @@ const nowPlayingMessageIds = new Map();
 
 const musicManager = new MusicManager({
   connectTimeoutMs: CONNECT_TIMEOUT_MS,
+  maxQueueLength: MAX_QUEUE_LENGTH,
+  maxTrackDurationSeconds: MAX_TRACK_DURATION_SECONDS,
+  playCooldownMs: PLAY_COOLDOWN_MS,
   resolveTimeoutMs: RESOLVE_TIMEOUT_MS,
   startTimeoutMs: START_TIMEOUT_MS,
   announcer: async ({ guildId, message, embed, nowPlaying }) => {

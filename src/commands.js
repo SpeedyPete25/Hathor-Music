@@ -583,13 +583,11 @@ async function handleInteraction(interaction, musicManager) {
       if (commandName === "playnext") {
         const state = musicManager.getState(interaction.guildId);
         if (state) {
-          const resolved = await musicManager.withTimeout(
-            musicManager.resolvePlayableInput(input),
-            musicManager.resolveTimeoutMs,
-            "I couldn't resolve that track in time. Try another link or search."
-          );
-
-          resolved.requesterId = interaction.user.id;
+          const resolved = await musicManager.prepareTrackRequest({
+            guildId: interaction.guildId,
+            input,
+            requesterId: interaction.user.id,
+          });
           const result = musicManager.playNext(interaction.guildId, resolved);
 
           if (result.error) {

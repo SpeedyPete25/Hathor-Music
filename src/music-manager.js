@@ -14,13 +14,25 @@ const {
 const ytdlExec = require("youtube-dl-exec");
 
 class MusicManager {
-  constructor({ connectTimeoutMs, resolveTimeoutMs, startTimeoutMs, announcer }) {
+  constructor({
+    connectTimeoutMs,
+    resolveTimeoutMs,
+    startTimeoutMs,
+    playCooldownMs,
+    maxQueueLength,
+    maxTrackDurationSeconds,
+    announcer,
+  }) {
     this.connectTimeoutMs = connectTimeoutMs;
     this.resolveTimeoutMs = resolveTimeoutMs;
     this.startTimeoutMs = startTimeoutMs;
+    this.playCooldownMs = playCooldownMs;
+    this.maxQueueLength = maxQueueLength;
+    this.maxTrackDurationSeconds = maxTrackDurationSeconds;
     this.announcer = announcer;
     this.idleDisconnectMs = 60_000;
     this.guildAudioState = new Map();
+    this.requestCooldowns = new Map();
     this.dataDir = path.join(__dirname, "..", "data");
     this.stateFilePath = path.join(this.dataDir, "music-state.json");
     this.settingsFilePath = path.join(this.dataDir, "guild-settings.json");
@@ -355,6 +367,84 @@ class MusicManager {
     }
 
     return value;
+  }
+
+  getQueueCapacity(guildId) {
+    const state = this.guildAudioState.get(guildId);
+    if (!state) {
+      return this.maxQueueLength;
+    }
+
+    return Math.max(0, this.maxQueueLength - state.queue.length - (state.current ? 1 : 0));
+  }
+
+  canAcceptMoreTracks(guildId) {
+    return this.getQueueCapacity(guildId) > 0;
+  }
+
+  enforceQueueCapacity(guildId) {
+    if (this.canAcceptMoreTracks(guildId)) {
+      return;
+    }
+
+    throw new Error(
+      `The queue is full. Hathor is limited to ${this.maxQueueLength} total track(s) per server.`
+    );
+  }
+
+  enforceTrackDuration(track) {
+    if (
+      typeof track?.durationSeconds !== "number" ||
+      !Number.isFinite(track.durationSeconds) ||
+      track.durationSeconds <= 0
+    ) {
+      throw new Error("Tracks must have a known duration to be queued.");
+    }
+
+    if (track.durationSeconds > this.maxTrackDurationSeconds) {
+      throw new Error(
+        `Tracks longer than ${this.formatDuration(this.maxTrackDurationSeconds)} are not allowed.`
+      );
+    }
+  }
+
+  enforcePlayCooldown(guildId, requesterId) {
+    if (!requesterId) {
+      return;
+    }
+
+    const key = `${guildId}:${requesterId}`;
+    const now = Date.now();
+    const lastRequestAt = this.requestCooldowns.get(key);
+
+    if (typeof lastRequestAt === "number") {
+      const elapsed = now - lastRequestAt;
+      if (elapsed < this.playCooldownMs) {
+        const remainingSeconds = Math.ceil((this.playCooldownMs - elapsed) / 1000);
+        throw new Error(`You're adding tracks too quickly. Wait ${remainingSeconds}s and try again.`);
+      }
+    }
+
+    this.requestCooldowns.set(key, now);
+  }
+
+  validateIncomingTrack(guildId, track) {
+    this.enforceQueueCapacity(guildId);
+    this.enforceTrackDuration(track);
+  }
+
+  async prepareTrackRequest({ guildId, input, requesterId }) {
+    this.enforcePlayCooldown(guildId, requesterId);
+
+    const resolved = await this.withTimeout(
+      this.resolvePlayableInput(input),
+      this.resolveTimeoutMs,
+      "I couldn't resolve that track in time. Try another link or search."
+    );
+
+    this.validateIncomingTrack(guildId, resolved);
+    resolved.requesterId = requesterId;
+    return resolved;
   }
 
   cleanupGuildAudio(guildId) {
@@ -793,6 +883,7 @@ class MusicManager {
       try {
         const autoplayTrack = await this.resolveAutoplayTrack(seedTrack, state);
         if (autoplayTrack) {
+          this.enforceTrackDuration(autoplayTrack);
           state.queue.push(autoplayTrack);
           this.persistState(guildId);
           await this.announce(
@@ -858,17 +949,12 @@ class MusicManager {
     let created = false;
 
     try {
-      const resolved = await this.withTimeout(
-        this.resolvePlayableInput(input),
-        this.resolveTimeoutMs,
-        "I couldn't resolve that track in time. Try another link or search."
-      );
+      const resolved = await this.prepareTrackRequest({ guildId, input, requesterId });
 
       const ensureResult = await this.ensureVoiceConnection(guildId, guild, channelId);
       const state = ensureResult.state;
       created = ensureResult.created;
       state.textChannelId = textChannelId;
-      resolved.requesterId = requesterId;
       this.persistState(guildId);
       const sourceLine = resolved.sourceNote ? `\n${resolved.sourceNote}` : "";
 
@@ -1031,6 +1117,12 @@ class MusicManager {
     const state = this.guildAudioState.get(guildId);
     if (!state) {
       return { error: "Nothing is currently active. Start playback first." };
+    }
+
+    try {
+      this.validateIncomingTrack(guildId, track);
+    } catch (error) {
+      return { error: error.message || "Track could not be queued." };
     }
 
     state.queue.unshift(track);
