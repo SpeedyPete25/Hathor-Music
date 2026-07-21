@@ -21,6 +21,7 @@ class MusicManager {
     playCooldownMs,
     maxQueueLength,
     maxTrackDurationSeconds,
+    metrics,
     announcer,
   }) {
     this.connectTimeoutMs = connectTimeoutMs;
@@ -29,6 +30,7 @@ class MusicManager {
     this.playCooldownMs = playCooldownMs;
     this.maxQueueLength = maxQueueLength;
     this.maxTrackDurationSeconds = maxTrackDurationSeconds;
+    this.metrics = metrics;
     this.announcer = announcer;
     this.idleDisconnectMs = 60_000;
     this.guildAudioState = new Map();
@@ -113,13 +115,53 @@ class MusicManager {
     };
   }
 
+  calculateQueueDuration(state) {
+    const tracks = [];
+
+    if (state?.current) {
+      tracks.push(state.current);
+    }
+
+    if (Array.isArray(state?.queue)) {
+      tracks.push(...state.queue);
+    }
+
+    let knownSeconds = 0;
+    let unknownDurationCount = 0;
+
+    for (const track of tracks) {
+      if (typeof track?.durationSeconds === "number" && Number.isFinite(track.durationSeconds)) {
+        knownSeconds += Math.max(0, track.durationSeconds);
+      } else {
+        unknownDurationCount += 1;
+      }
+    }
+
+    return {
+      seconds: Math.floor(knownSeconds),
+      trackCount: tracks.length,
+      unknownDurationCount,
+    };
+  }
+
   persistState(guildId) {
     const state = this.guildAudioState.get(guildId);
 
     if (!state) {
+      if (this.metrics) {
+        this.metrics.observeQueueDuration(guildId, {
+          seconds: 0,
+          trackCount: 0,
+          unknownDurationCount: 0,
+        });
+      }
       this.persistedGuildState.delete(guildId);
       this.writePersistedState();
       return;
+    }
+
+    if (this.metrics) {
+      this.metrics.observeQueueDuration(guildId, this.calculateQueueDuration(state));
     }
 
     const current = this.sanitizeTrack(state.current);
@@ -514,18 +556,32 @@ class MusicManager {
     });
 
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      if (this.metrics) {
+        this.metrics.observeReconnectAttempt();
+      }
+
       try {
         await Promise.race([
           entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
           entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
         ]);
+
+        if (this.metrics) {
+          this.metrics.observeReconnectRecovered();
+        }
       } catch {
+        if (this.metrics) {
+          this.metrics.observeReconnectFailure();
+        }
         this.cleanupGuildAudio(guildId);
       }
     });
 
     player.on("error", async (error) => {
       console.error("Audio player error:", error);
+      if (this.metrics) {
+        this.metrics.observePlaybackFailure(error, "audio-player");
+      }
       const failedTrack = state.current;
       this.stopNowPlayingTicker(guildId);
       state.current = null;
@@ -754,6 +810,9 @@ class MusicManager {
       return { ok: true };
     } catch (error) {
       console.error("Failed to start track:", error);
+      if (this.metrics) {
+        this.metrics.observePlaybackFailure(error, "start-track");
+      }
       this.stopNowPlayingTicker(guildId);
       state.current = null;
       this.persistState(guildId);
@@ -895,6 +954,9 @@ class MusicManager {
         }
       } catch (error) {
         console.error("Autoplay resolution failed:", error);
+        if (this.metrics) {
+          this.metrics.observePlaybackFailure(error, "autoplay");
+        }
         await this.announce(guildId, `Autoplay failed: ${this.getErrorMessage(error)}`);
       }
     }

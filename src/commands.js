@@ -123,7 +123,53 @@ function buildCommands() {
           .setRequired(false)
           .addChoices({ name: "On", value: "on" }, { name: "Off", value: "off" })
       ),
+    new SlashCommandBuilder()
+      .setName("health")
+      .setDescription("Show runtime health and performance metrics."),
   ].map((command) => command.toJSON());
+}
+
+function formatHealthReport(snapshot) {
+  const lines = [];
+  lines.push(`Uptime: ${snapshot.uptimeSeconds}s`);
+  lines.push(
+    `Command latency avg/p95/max: ${snapshot.command.avgMs}ms / ${snapshot.command.p95Ms}ms / ${snapshot.command.maxMs}ms`
+  );
+  lines.push(`Commands: ${snapshot.command.total} total, ${snapshot.command.failed} failed`);
+  lines.push(
+    `Reconnects: ${snapshot.reconnect.attempts} attempts, ${snapshot.reconnect.recovered} recovered, ${snapshot.reconnect.failed} failed`
+  );
+  lines.push(`Playback failures: ${snapshot.playbackFailureCount}`);
+
+  if (snapshot.queue) {
+    lines.push(
+      `Queue duration current/peak: ${snapshot.queue.currentDuration} / ${snapshot.queue.peakDuration}`
+    );
+    lines.push(
+      `Queue tracks: ${snapshot.queue.trackCount} (${snapshot.queue.unknownDurationCount} unknown duration)`
+    );
+  }
+
+  lines.push(
+    `Runtime errors: ${snapshot.runtimeErrors.unhandledRejections} unhandled rejections, ${snapshot.runtimeErrors.uncaughtExceptions} uncaught exceptions`
+  );
+
+  if (snapshot.lastPlaybackFailure) {
+    lines.push(
+      `Last playback failure: ${snapshot.lastPlaybackFailure.context} at ${snapshot.lastPlaybackFailure.at}`
+    );
+  }
+
+  if (snapshot.command.topCommands.length > 0) {
+    lines.push("Top commands:");
+    for (const command of snapshot.command.topCommands) {
+      lines.push(
+        `- /${command.name}: ${command.count} calls, ${command.failed} failed, avg/p95 ${command.avgMs}ms/${command.p95Ms}ms`
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
 
 async function safeInteractionReply(interaction, payload) {
@@ -161,9 +207,12 @@ async function canUseDestructiveCommand(interaction, state) {
   return false;
 }
 
-async function handleInteraction(interaction, musicManager) {
+async function handleInteraction(interaction, musicManager, healthMetrics) {
   if (!interaction.isChatInputCommand()) return;
 
+  const startedAt = Date.now();
+  const commandName = interaction.commandName;
+  let succeeded = true;
   let playShouldCleanupOnError = false;
 
   try {
@@ -174,6 +223,26 @@ async function handleInteraction(interaction, musicManager) {
 
     if (interaction.commandName === "hathor") {
       await interaction.reply("Hathor is listening.");
+      succeeded = true;
+      return;
+    }
+
+    if (interaction.commandName === "health") {
+      const snapshot = healthMetrics
+        ? healthMetrics.getSnapshot({ guildId: interaction.guildId || null })
+        : null;
+
+      if (!snapshot) {
+        await interaction.reply("Health metrics are unavailable.");
+        succeeded = true;
+        return;
+      }
+
+      await interaction.reply({
+        content: formatHealthReport(snapshot),
+        ephemeral: true,
+      });
+      succeeded = true;
       return;
     }
 
@@ -188,6 +257,7 @@ async function handleInteraction(interaction, musicManager) {
 
       musicManager.cleanupGuildAudio(interaction.guildId);
       await interaction.reply("Left the voice channel.");
+      succeeded = true;
       return;
     }
 
@@ -210,6 +280,7 @@ async function handleInteraction(interaction, musicManager) {
       }
 
       await interaction.reply(queueView);
+      succeeded = true;
       return;
     }
 
@@ -244,6 +315,7 @@ async function handleInteraction(interaction, musicManager) {
       const message = musicManager.skip(interaction.guildId);
 
       await interaction.reply(message);
+      succeeded = true;
       return;
     }
 
@@ -278,6 +350,7 @@ async function handleInteraction(interaction, musicManager) {
       const clearedCount = musicManager.clear(interaction.guildId);
 
       await interaction.reply(`Cleared ${clearedCount} queued track(s).`);
+      succeeded = true;
       return;
     }
 
@@ -321,6 +394,7 @@ async function handleInteraction(interaction, musicManager) {
       }
 
       await interaction.reply(`Removed #${index}: ${result.removedTrack.title}`);
+      succeeded = true;
       return;
     }
 
@@ -365,6 +439,7 @@ async function handleInteraction(interaction, musicManager) {
       }
 
       await interaction.reply(`Moved #${fromIndex} -> #${toIndex}: ${result.track.title}`);
+      succeeded = true;
       return;
     }
 
@@ -411,6 +486,7 @@ async function handleInteraction(interaction, musicManager) {
       await interaction.reply(
         `Swapped #${firstIndex} (${result.firstTrack.title}) with #${secondIndex} (${result.secondTrack.title}).`
       );
+      succeeded = true;
       return;
     }
 
@@ -453,6 +529,7 @@ async function handleInteraction(interaction, musicManager) {
       }
 
       await interaction.reply(`Shuffled ${result.count} queued track(s).`);
+      succeeded = true;
       return;
     }
 
@@ -496,6 +573,7 @@ async function handleInteraction(interaction, musicManager) {
       }
 
       await interaction.reply(`Loop mode set to: ${result.mode}`);
+      succeeded = true;
       return;
     }
 
@@ -527,6 +605,7 @@ async function handleInteraction(interaction, musicManager) {
 
       const enabled = musicManager.setGuildAutoplay(interaction.guildId, mode === "on");
       await interaction.reply(`Autoplay is now ${enabled ? "on" : "off"}.`);
+      succeeded = true;
       return;
     }
 
@@ -603,6 +682,7 @@ async function handleInteraction(interaction, musicManager) {
           await interaction.editReply(
             `Added to play next: ${resolved.title}\n${resolved.webpageUrl}${sourceLine}`
           );
+          succeeded = true;
           return;
         }
       }
@@ -618,9 +698,11 @@ async function handleInteraction(interaction, musicManager) {
 
       playShouldCleanupOnError = false;
       await interaction.editReply(playResult.message);
+      succeeded = true;
       return;
     }
   } catch (error) {
+    succeeded = false;
     console.error("Interaction handling error:", error);
 
     if (interaction.commandName === "play" && interaction.guildId && playShouldCleanupOnError) {
@@ -636,6 +718,10 @@ async function handleInteraction(interaction, musicManager) {
       content: `Error: ${safeReason}`,
       ephemeral: true,
     });
+  } finally {
+    if (healthMetrics) {
+      healthMetrics.observeCommand(commandName, Date.now() - startedAt, succeeded);
+    }
   }
 }
 

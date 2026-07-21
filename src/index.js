@@ -9,6 +9,7 @@ const {
   token,
 } = require("./config");
 const { buildCommands, handleInteraction } = require("./commands");
+const { HealthMetrics } = require("./health-metrics");
 const { MusicManager } = require("./music-manager");
 
 const client = new Client({
@@ -20,6 +21,7 @@ const client = new Client({
 });
 
 const nowPlayingMessageIds = new Map();
+const healthMetrics = new HealthMetrics();
 
 const musicManager = new MusicManager({
   connectTimeoutMs: CONNECT_TIMEOUT_MS,
@@ -28,6 +30,7 @@ const musicManager = new MusicManager({
   playCooldownMs: PLAY_COOLDOWN_MS,
   resolveTimeoutMs: RESOLVE_TIMEOUT_MS,
   startTimeoutMs: START_TIMEOUT_MS,
+  metrics: healthMetrics,
   announcer: async ({ guildId, message, embed, nowPlaying }) => {
     const state = musicManager.getState(guildId);
     const channelId = state?.textChannelId;
@@ -87,7 +90,7 @@ client.once(Events.ClientReady, (readyClient) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  await handleInteraction(interaction, musicManager);
+  await handleInteraction(interaction, musicManager, healthMetrics);
 });
 
 client.on("error", (error) => {
@@ -99,10 +102,12 @@ client.on("warn", (warning) => {
 });
 
 process.on("unhandledRejection", (reason) => {
+  healthMetrics.observeUnhandledRejection();
   console.error("Unhandled promise rejection:", reason);
 });
 
 process.on("uncaughtException", (error) => {
+  healthMetrics.observeUncaughtException();
   console.error("Uncaught exception:", error);
 });
 
