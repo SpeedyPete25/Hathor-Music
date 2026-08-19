@@ -1,4 +1,4 @@
-const { Readable } = require("node:stream");
+const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
@@ -740,30 +740,78 @@ class MusicManager {
     };
   }
 
+  spawnYtDlpAudioStream(videoUrl) {
+    return new Promise((resolve, reject) => {
+      // The bundled yt-dlp.exe (youtube-dl-exec) can't be given plugins, and
+      // YouTube now 403s anonymous CDN requests without one. We shell out to
+      // the pip-installed yt-dlp instead, which loads the bgutil PO-token
+      // plugin (talking to the local bgutil-ytdlp-pot-provider Docker
+      // container on :4416) and a Deno-backed JS challenge solver, using this
+      // machine's logged-in Firefox session for auth. Without all three
+      // pieces running, YouTube playback fails outright.
+      const child = spawn(
+        "python",
+        [
+          "-m",
+          "yt_dlp",
+          videoUrl,
+          "--format",
+          "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=webm]/bestaudio",
+          "--output",
+          "-",
+          "--quiet",
+          "--no-warnings",
+          "--cookies-from-browser",
+          "firefox",
+          "--remote-components",
+          "ejs:github",
+        ],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            PATH: `C:\\Users\\mfigm\\bin;${process.env.PATH || ""}`,
+          },
+        }
+      );
+
+      let stderrOutput = "";
+      let settled = false;
+
+      child.stderr.on("data", (chunk) => {
+        stderrOutput += chunk.toString();
+      });
+
+      child.on("error", (error) => {
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      });
+
+      child.stdout.once("data", (chunk) => {
+        if (!settled) {
+          settled = true;
+          child.stdout.unshift(chunk);
+          resolve(child.stdout);
+        }
+      });
+
+      child.on("exit", (code) => {
+        if (!settled && code !== 0) {
+          settled = true;
+          reject(
+            new Error(
+              `yt-dlp exited with code ${code}: ${stderrOutput.trim() || "no output"}`
+            )
+          );
+        }
+      });
+    });
+  }
+
   async createTrackResource(track) {
-    const info = await ytdlExec(track.videoUrl, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      skipDownload: true,
-      format: "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=webm]/bestaudio",
-    });
-
-    if (!info?.url) {
-      throw new Error("Could not extract a playable audio stream.");
-    }
-
-    const response = await fetch(info.url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-    });
-
-    if (!response.ok || !response.body) {
-      throw new Error(`Audio source request failed (${response.status}).`);
-    }
-
-    const upstreamStream = Readable.fromWeb(response.body);
+    const upstreamStream = await this.spawnYtDlpAudioStream(track.videoUrl);
     const probed = await demuxProbe(upstreamStream);
 
     return createAudioResource(probed.stream, {
