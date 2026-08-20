@@ -38,6 +38,7 @@ class MusicManager {
     this.dataDir = path.join(__dirname, "..", "data");
     this.stateFilePath = path.join(this.dataDir, "music-state.json");
     this.settingsFilePath = path.join(this.dataDir, "guild-settings.json");
+    this.cookiesFilePath = path.join(this.dataDir, "cookies.txt");
     this.persistedGuildState = this.loadPersistedState();
     this.guildSettings = this.loadGuildSettings();
   }
@@ -746,9 +747,11 @@ class MusicManager {
       // YouTube now 403s anonymous CDN requests without one. We shell out to
       // the pip-installed yt-dlp instead, which loads the bgutil PO-token
       // plugin (talking to the local bgutil-ytdlp-pot-provider Docker
-      // container on :4416) and a Deno-backed JS challenge solver, using this
-      // machine's logged-in Firefox session for auth. Without all three
-      // pieces running, YouTube playback fails outright.
+      // container on :4416) and a Deno-backed JS challenge solver, using an
+      // exported YouTube session (data/cookies.txt) for auth. Without all
+      // three pieces running, YouTube playback fails outright. The web/mweb/
+      // tv_simply client combo is required too — the default client picked
+      // for an authenticated session doesn't expose audio-only formats.
       const child = spawn(
         "python",
         [
@@ -761,8 +764,10 @@ class MusicManager {
           "-",
           "--quiet",
           "--no-warnings",
-          "--cookies-from-browser",
-          "firefox",
+          "--cookies",
+          this.cookiesFilePath,
+          "--extractor-args",
+          "youtube:player_client=web,mweb,tv_simply",
           "--remote-components",
           "ejs:github",
         ],
