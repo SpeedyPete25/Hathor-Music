@@ -752,6 +752,8 @@ class MusicManager {
       // three pieces running, YouTube playback fails outright. The web/mweb/
       // tv_simply client combo is required too — the default client picked
       // for an authenticated session doesn't expose audio-only formats.
+      const potProviderBaseUrl = process.env.POT_PROVIDER_BASE_URL || "http://127.0.0.1:4416";
+
       const child = spawn(
         "python",
         [
@@ -768,15 +770,17 @@ class MusicManager {
           this.cookiesFilePath,
           "--extractor-args",
           "youtube:player_client=web,mweb,tv_simply",
+          "--extractor-args",
+          `youtubepot-bgutilhttp:base_url=${potProviderBaseUrl}`,
           "--remote-components",
           "ejs:github",
         ],
         {
           stdio: ["ignore", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            PATH: `C:\\Users\\mfigm\\bin;${process.env.PATH || ""}`,
-          },
+          env:
+            process.platform === "win32"
+              ? { ...process.env, PATH: `C:\\Users\\mfigm\\bin;${process.env.PATH || ""}` }
+              : process.env,
         }
       );
 

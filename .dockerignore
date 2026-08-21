@@ -1,0 +1,11 @@
+node_modules
+data
+.env
+.env.example
+token.txt
+.git
+.gitignore
+README.md
+icon.jpg
+icon_pixelated.jpg
+scripts
