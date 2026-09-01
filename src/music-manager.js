@@ -749,9 +749,11 @@ class MusicManager {
       // plugin (talking to the local bgutil-ytdlp-pot-provider Docker
       // container on :4416) and a Deno-backed JS challenge solver, using an
       // exported YouTube session (data/cookies.txt) for auth. Without all
-      // three pieces running, YouTube playback fails outright. The web/mweb/
-      // tv_simply client combo is required too — the default client picked
-      // for an authenticated session doesn't expose audio-only formats.
+      // three pieces running, YouTube playback fails outright. Which client
+      // exposes an audio-only opus format shifts as YouTube changes its
+      // enforcement, so the format string falls back to a muxed video+audio
+      // format (ffmpeg strips the video) rather than hard-failing when no
+      // audio-only stream is offered.
       const potProviderBaseUrl = process.env.POT_PROVIDER_BASE_URL || "http://127.0.0.1:4416";
 
       const child = spawn(
@@ -761,15 +763,13 @@ class MusicManager {
           "yt_dlp",
           videoUrl,
           "--format",
-          "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=webm]/bestaudio",
+          "bestaudio[acodec=opus][ext=webm]/bestaudio/best",
           "--output",
           "-",
           "--quiet",
           "--no-warnings",
           "--cookies",
           this.cookiesFilePath,
-          "--extractor-args",
-          "youtube:player_client=web,mweb,tv_simply",
           "--extractor-args",
           `youtubepot-bgutilhttp:base_url=${potProviderBaseUrl}`,
           "--remote-components",
