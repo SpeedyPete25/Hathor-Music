@@ -716,15 +716,19 @@ class MusicManager {
       videoUrl = `https://www.youtube.com/watch?v=${firstResult.id}`;
     }
 
+    // No format filter here: this call only reads metadata (title, duration,
+    // thumbnail) for display, never info.url — spawnYtDlpAudioStream does the
+    // real format selection for streaming. Constraining the format here too
+    // meant this call could throw "format not available" for a track that
+    // spawnYtDlpAudioStream's wider fallback chain would have played fine.
     const info = await ytdlExec(videoUrl, {
       dumpSingleJson: true,
       noWarnings: true,
       skipDownload: true,
-      format: "bestaudio[acodec=opus][ext=webm]/bestaudio[ext=webm]/bestaudio",
     });
 
-    if (!info?.url) {
-      throw new Error("Could not extract a playable audio stream.");
+    if (!info) {
+      throw new Error("Could not extract video info.");
     }
 
     return {
@@ -763,7 +767,7 @@ class MusicManager {
           "yt_dlp",
           videoUrl,
           "--format",
-          "bestaudio[acodec=opus][ext=webm]/bestaudio/best",
+          "bestaudio[acodec=opus][ext=webm]/bestaudio/best[height<=480]/worst",
           "--output",
           "-",
           "--quiet",
