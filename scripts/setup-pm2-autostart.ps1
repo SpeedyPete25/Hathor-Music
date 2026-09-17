@@ -54,11 +54,20 @@ function Resolve-Pm2Executable {
 
 function Remove-TaskIfExists {
   $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  if ($existing) {
+  if (-not $existing) {
+    Write-Host "Scheduled task '$taskName' was not found."
+    return
+  }
+
+  try {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     Write-Host "Removed scheduled task '$taskName'."
-  } else {
-    Write-Host "Scheduled task '$taskName' was not found."
+  } catch {
+    if ($_.Exception.Message -match "Access is denied") {
+      Write-Warning "Access denied removing scheduled task '$taskName'. Re-run this script from an elevated (Run as Administrator) PowerShell window."
+    } else {
+      throw
+    }
   }
 }
 
