@@ -4,10 +4,10 @@ const path = require("node:path");
 const {
   AudioPlayerStatus,
   NoSubscriberBehavior,
+  StreamType,
   VoiceConnectionStatus,
   createAudioPlayer,
   createAudioResource,
-  demuxProbe,
   entersState,
   joinVoiceChannel,
 } = require("@discordjs/voice");
@@ -806,6 +806,11 @@ class MusicManager {
         if (!settled) {
           settled = true;
           child.stdout.unshift(chunk);
+          // once('data', ...) switches the stream into flowing mode, where
+          // data with no listener is dropped rather than buffered. Pause it
+          // again so nothing is lost in the gap before the caller attaches
+          // its own consumer (e.g. piping into ffmpeg).
+          child.stdout.pause();
           resolve(child.stdout);
         }
       });
@@ -823,12 +828,98 @@ class MusicManager {
     });
   }
 
+  spawnLoudnessNormalizedStream(upstreamStream) {
+    return new Promise((resolve, reject) => {
+      // Tracks arrive mastered at wildly different loudness levels. Real
+      // two-pass EBU R128 normalization needs to measure the whole file
+      // before playing a note of it, which means buffering the full track
+      // first — unacceptable startup latency for a bot that's supposed to
+      // start playing immediately. ffmpeg's loudnorm filter also runs
+      // single-pass/real-time, adapting as it goes instead of from a full
+      // measurement, so it's less precise than a proper two-pass — but it's
+      // close enough to stop quiet and loud tracks from feeling jarring back
+      // to back, with no added delay before playback starts. This also
+      // subsumes the old demuxProbe step: ffmpeg decodes whatever container
+      // yt-dlp handed back (opus/webm or a muxed video+audio fallback), so no
+      // separate format detection is needed. Output stays Opus (ffmpeg's own
+      // libopus) rather than raw PCM — @discordjs/voice's Raw input type
+      // needs a JS Opus encoder (@discordjs/opus/opusscript) to convert PCM
+      // back to Opus for Discord, and ffmpeg already does that encoding step
+      // natively as part of loudnorm, so adding one would just be a second,
+      // redundant encode.
+      const ffmpeg = spawn(
+        "ffmpeg",
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-i",
+          "pipe:0",
+          "-af",
+          "loudnorm=I=-16:TP=-1.5:LRA=11",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-c:a",
+          "libopus",
+          "-b:a",
+          "128k",
+          "-f",
+          "ogg",
+          "pipe:1",
+        ],
+        { stdio: ["pipe", "pipe", "pipe"] }
+      );
+
+      // Both ends need their own error handler: an unhandled 'error' on
+      // either side of a pipe crashes the whole process, not just this
+      // track, and EPIPE here is routine — it fires every time playback
+      // stops early (skip, disconnect) and severs the pipe mid-write.
+      upstreamStream.on("error", () => ffmpeg.stdin.destroy());
+      ffmpeg.stdin.on("error", () => upstreamStream.destroy());
+      upstreamStream.pipe(ffmpeg.stdin);
+
+      let stderrOutput = "";
+      let settled = false;
+
+      ffmpeg.stderr.on("data", (chunk) => {
+        stderrOutput += chunk.toString();
+      });
+
+      ffmpeg.on("error", (error) => {
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      });
+
+      ffmpeg.stdout.once("data", (chunk) => {
+        if (!settled) {
+          settled = true;
+          ffmpeg.stdout.unshift(chunk);
+          ffmpeg.stdout.pause();
+          resolve(ffmpeg.stdout);
+        }
+      });
+
+      ffmpeg.on("exit", (code) => {
+        if (!settled && code !== 0) {
+          settled = true;
+          reject(
+            new Error(`ffmpeg exited with code ${code}: ${stderrOutput.trim() || "no output"}`)
+          );
+        }
+      });
+    });
+  }
+
   async createTrackResource(track) {
     const upstreamStream = await this.spawnYtDlpAudioStream(track.videoUrl);
-    const probed = await demuxProbe(upstreamStream);
+    const normalizedStream = await this.spawnLoudnessNormalizedStream(upstreamStream);
 
-    return createAudioResource(probed.stream, {
-      inputType: probed.type,
+    return createAudioResource(normalizedStream, {
+      inputType: StreamType.OggOpus,
       silencePaddingFrames: 5,
     });
   }
