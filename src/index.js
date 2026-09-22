@@ -5,12 +5,15 @@ const {
   MAX_TRACK_DURATION_SECONDS,
   PLAY_COOLDOWN_MS,
   RESOLVE_TIMEOUT_MS,
+  SPOTIFY_CLIENT_ID,
+  SPOTIFY_CLIENT_SECRET,
   START_TIMEOUT_MS,
   token,
 } = require("./config");
 const { buildCommands, handleInteraction } = require("./commands");
 const { HealthMetrics } = require("./health-metrics");
 const { MusicManager } = require("./music-manager");
+const { SpotifyClient } = require("./spotify-client");
 
 const client = new Client({
   intents: [
@@ -22,6 +25,14 @@ const client = new Client({
 
 const nowPlayingMessageIds = new Map();
 const healthMetrics = new HealthMetrics();
+const spotifyClient = new SpotifyClient({
+  clientId: SPOTIFY_CLIENT_ID,
+  clientSecret: SPOTIFY_CLIENT_SECRET,
+});
+
+if (!spotifyClient.isConfigured()) {
+  console.log("SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET not set — Spotify links will not resolve.");
+}
 
 const musicManager = new MusicManager({
   connectTimeoutMs: CONNECT_TIMEOUT_MS,
@@ -31,6 +42,7 @@ const musicManager = new MusicManager({
   resolveTimeoutMs: RESOLVE_TIMEOUT_MS,
   startTimeoutMs: START_TIMEOUT_MS,
   metrics: healthMetrics,
+  spotifyClient,
   announcer: async ({ guildId, message, embed, nowPlaying }) => {
     const state = musicManager.getState(guildId);
     const channelId = state?.textChannelId;

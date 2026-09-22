@@ -23,6 +23,7 @@ class MusicManager {
     maxTrackDurationSeconds,
     metrics,
     announcer,
+    spotifyClient,
   }) {
     this.connectTimeoutMs = connectTimeoutMs;
     this.resolveTimeoutMs = resolveTimeoutMs;
@@ -32,6 +33,7 @@ class MusicManager {
     this.maxTrackDurationSeconds = maxTrackDurationSeconds;
     this.metrics = metrics;
     this.announcer = announcer;
+    this.spotifyClient = spotifyClient || null;
     this.idleDisconnectMs = 60_000;
     this.guildAudioState = new Map();
     this.requestCooldowns = new Map();
@@ -659,7 +661,31 @@ class MusicManager {
     let videoUrl = null;
     let sourceNote = null;
 
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    // Spotify's own audio is DRM-locked, so a Spotify link is resolved down
+    // to "artist - title" and handed to the exact same YouTube search path
+    // as free-text /play input, below — everything past this point is the
+    // resolved YouTube video, not the original Spotify link.
+    const spotifyInfo = this.spotifyClient ? await this.spotifyClient.resolveLink(trimmed) : null;
+
+    if (spotifyInfo) {
+      const searchResult = await ytdlExec(`ytsearch1:${spotifyInfo.searchQuery}`, {
+        dumpSingleJson: true,
+        noWarnings: true,
+        skipDownload: true,
+      });
+
+      const firstResult =
+        Array.isArray(searchResult?.entries) && searchResult.entries.length > 0
+          ? searchResult.entries[0]
+          : null;
+
+      if (!firstResult?.id) {
+        throw new Error(`No YouTube match found for "${spotifyInfo.searchQuery}".`);
+      }
+
+      videoUrl = `https://www.youtube.com/watch?v=${firstResult.id}`;
+      sourceNote = spotifyInfo.sourceNote || `From Spotify: ${spotifyInfo.searchQuery}`;
+    } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
       const parsed = new URL(trimmed);
 
       if (parsed.hostname === "youtu.be") {
