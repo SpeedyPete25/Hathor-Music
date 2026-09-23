@@ -758,13 +758,20 @@ class MusicManager {
     }
 
     return {
-      title: info.title || videoUrl,
+      // Prefer Spotify's own title/artist and album art when the track came
+      // from a Spotify link — YouTube's title/thumbnail describe whatever
+      // upload matched the search, which is often messier (lyric videos,
+      // fan uploads) than Spotify's own metadata for the same song. The link
+      // and duration still point at the actual YouTube video being played,
+      // since that's the real audio source, not the Spotify track itself.
+      title: spotifyInfo ? spotifyInfo.searchQuery : info.title || videoUrl,
       webpageUrl: info.webpage_url || videoUrl,
       videoUrl,
       sourceNote,
       durationSeconds:
         typeof info.duration === "number" && Number.isFinite(info.duration) ? info.duration : null,
       thumbnailUrl:
+        spotifyInfo?.thumbnailUrl ||
         (Array.isArray(info.thumbnails) && info.thumbnails.length > 0
           ? info.thumbnails[info.thumbnails.length - 1]?.url
           : null) || info.thumbnail || null,

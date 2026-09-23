@@ -38,13 +38,20 @@ function pickArtistNames(artists) {
   return Array.isArray(artists) ? artists.map((artist) => artist?.name).filter(Boolean) : [];
 }
 
-function trackToInfo(track) {
+// Spotify returns images largest-first; Discord scales embed thumbnails
+// itself, so the largest is fine to use directly.
+function pickThumbnail(images) {
+  return Array.isArray(images) && images.length > 0 ? images[0]?.url || null : null;
+}
+
+function trackToInfo(track, { thumbnailUrl } = {}) {
   const artists = pickArtistNames(track.artists);
   return {
     title: track.name,
     artists,
     searchQuery: artists.length ? `${artists.join(", ")} - ${track.name}` : track.name,
     spotifyUrl: track.external_urls?.spotify || null,
+    thumbnailUrl: thumbnailUrl || pickThumbnail(track.album?.images),
   };
 }
 
@@ -120,7 +127,7 @@ class SpotifyClient {
     // YouTube playlist link (resolvePlayableInput requests playlistItems=1).
     // Full playlist expansion is a separate feature, not this one.
     const playlist = await this.apiRequest(
-      `/playlists/${id}?fields=name,tracks.items(track(name,artists,external_urls,type))`
+      `/playlists/${id}?fields=name,tracks.items(track(name,artists,external_urls,type,album(images)))`
     );
 
     const firstItem = (playlist.tracks?.items || []).find(
@@ -138,8 +145,11 @@ class SpotifyClient {
   }
 
   async getAlbumFirstTrackInfo(id) {
+    // Album art lives on the album object itself here, not per-track (the
+    // /albums endpoint's track items are simplified track objects with no
+    // album reference), so it's requested and passed through separately.
     const album = await this.apiRequest(
-      `/albums/${id}?fields=name,tracks.items(name,artists,external_urls,type)`
+      `/albums/${id}?fields=name,images,tracks.items(name,artists,external_urls,type)`
     );
 
     const firstTrack = (album.tracks?.items || []).find((track) => track?.type === "track");
@@ -149,7 +159,7 @@ class SpotifyClient {
     }
 
     return {
-      ...trackToInfo(firstTrack),
+      ...trackToInfo(firstTrack, { thumbnailUrl: pickThumbnail(album.images) }),
       sourceNote: `From Spotify album: ${album.name}`,
     };
   }
